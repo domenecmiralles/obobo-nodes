@@ -1,0 +1,18 @@
+# Obobo Nodes Requirements
+# These are the minimal dependencies required for the obobo nodes to function
+
+# Core Python dependencies (usually included with ComfyUI)
+# No additional packages required beyond standard Python libraries
+
+# The nodes use only standard Python libraries:
+# - logging (built-in)
+# - os (built-in)
+# - folder_paths (provided by ComfyUI)
+
+# If you encounter any issues, ensure you have:
+# - Python 3.8 or higher
+# - A working ComfyUI installation
+# - Proper file system permissions for the custom_nodes directory
+
+# Note: These nodes are designed to be lightweight and have minimal dependencies
+# to ensure maximum compatibility with different ComfyUI setups. 
