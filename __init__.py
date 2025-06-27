@@ -8,6 +8,7 @@ from .obobo_input_lora import OboboInputLora
 from .obobo_input_vector2 import OboboInputVector2
 from .obobo_output import OboboOutput
 
+#test
 
 NODE_CLASS_MAPPINGS = {
     "OboboInputText": OboboInputText,
