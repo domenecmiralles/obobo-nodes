@@ -15,7 +15,7 @@ class OboboInputMedia(OboboBaseNode):
         logger.info(f"{self.__class__.__name__} node initialized")
 
     @staticmethod
-    def process_media(path, name, tooltip=""):
+    def process_media(path, name, tooltip="", optional_input=False):
         """Return the path as a list (rows), using AlwaysEqualProxy for compatibility."""
         if isinstance(path, str):
             rows = [path.split('\n')[0]]

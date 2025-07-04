@@ -29,6 +29,7 @@ class OboboInputImage(OboboInputMedia):
     CATEGORY = "obobo/input"
     DESCRIPTION = "Specify an image file path for Obobo workflows"
 
-    def process_image(self, image_path, name, tooltip=""):
+    def process_image(self, image_path, name, tooltip="", optional_input=False):
         self.set_tooltip(tooltip)
+        self.set_optional_input(optional_input)
         return self.process_media(image_path, name, tooltip)

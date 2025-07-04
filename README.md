@@ -78,6 +78,23 @@ All input nodes are located in the `obobo/input` category in ComfyUI and include
   - `clip`: Optional CLIP model connection
 - **Output**: Model, CLIP, LoRA path, and strength values
 
+### Control Nodes
+
+Control nodes are located in the `obobo/control` category and provide workflow control functionality:
+
+#### Conditional Bypass (`OboboConditionalBypass`)
+- **Purpose**: Conditionally skip or pass through inputs based on a boolean flag
+- **ComfyUI Inputs**:
+  - `input`: Any type of input to conditionally process
+  - `enabled`: Boolean toggle (True = skip, False = pass through, default: False)
+  - `name`: Custom name for the node (default: "Conditional Bypass")
+  - `tooltip`: Optional documentation text
+- **Output**: Either the input value (when enabled=False) or None (when enabled=True)
+- **Use Cases**: 
+  - Skip processing based on validation logic
+  - Conditional workflow branches
+  - Dynamic workflow control from UI flags
+
 ### Output Node
 
 #### Output (`OboboOutput`)
@@ -95,14 +112,15 @@ All input nodes are located in the `obobo/input` category in ComfyUI and include
 
 1. Copy the `obobo_nodes` folder to your ComfyUI `custom_nodes` directory
 2. Restart ComfyUI
-3. The nodes will appear in the node menu under `obobo/input` and `obobo/output` categories
+3. The nodes will appear in the node menu under `obobo/input`, `obobo/control`, and `obobo/output` categories
 
 ### 2. Creating a Workflow
 
 1. **Add obobo input nodes** where you want inputs to appear in Obobo
-2. **Connect them to your existing ComfyUI nodes** as needed
-3. **Add an obobo output node** to specify where results should be saved
-4. **Save your workflow** as a JSON file
+2. **Add control nodes** for conditional processing if needed
+3. **Connect them to your existing ComfyUI nodes** as needed
+4. **Add an obobo output node** to specify where results should be saved
+5. **Save your workflow** as a JSON file
 
 ### 3. Using in Obobo
 
@@ -125,8 +143,9 @@ All input nodes are located in the `obobo/input` category in ComfyUI and include
 - **Type Safety**: Proper type definitions for all inputs and outputs
 - **Flexible Outputs**: Some nodes provide multiple output types for maximum compatibility
 
-## Example Workflow
+## Example Workflows
 
+### Basic Input Workflow
 A typical workflow might include:
 1. `OboboInputText` → Text generation node
 2. `OboboInputNumber` → Duration/parameter control
@@ -134,12 +153,20 @@ A typical workflow might include:
 4. `OboboInputVector2` → Resolution settings
 5. `OboboOutput` → Specify output location
 
+### Conditional Processing Workflow
+For more complex workflows with conditional logic:
+1. `OboboInputText` → `OboboConditionalBypass` → Text generation node
+2. `OboboInputImage` → `OboboConditionalBypass` → Image processing node
+3. `OboboInputNumber` → Control the bypass conditions
+4. `OboboOutput` → Specify output location
+
 ## Troubleshooting
 
 ### Common Issues
 - **Nodes not appearing**: Ensure the folder is in the correct `custom_nodes` directory
 - **Connection errors**: Check that input/output types match between nodes
 - **Path issues**: Use absolute paths or paths relative to ComfyUI root directory
+- **Conditional bypass not working**: Ensure downstream nodes can handle None inputs gracefully
 
 ### Logging
 All nodes include detailed logging. Check the ComfyUI console for:

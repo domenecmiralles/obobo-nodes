@@ -29,6 +29,7 @@ class OboboInputAudio(OboboInputMedia):
     CATEGORY = "obobo/input"
     DESCRIPTION = "Specify an audio file path for Obobo workflows"
 
-    def process_audio(self, audio_path, name, tooltip=""):
+    def process_audio(self, audio_path, name, tooltip="", optional_input=False):
         self.set_tooltip(tooltip)
+        self.set_optional_input(optional_input)
         return self.process_media(audio_path, name, tooltip)

@@ -42,7 +42,7 @@ class OboboOutput(OboboBaseNode):
     DESCRIPTION = "Specify an output file path for Obobo workflows"
     OUTPUT_NODE = True
 
-    def process_output(self, file_path, name, tooltip=""):
+    def process_output(self, file_path, name, tooltip="", optional_input=False):
         """Process the output path input"""
         try:
             if not file_path:
@@ -50,6 +50,7 @@ class OboboOutput(OboboBaseNode):
                 return (None)
             
             self.set_tooltip(tooltip)
+            self.set_optional_input(optional_input)
             logger.info(f"Output path processed: {file_path}")
             self.output_path = file_path
             return (file_path,)

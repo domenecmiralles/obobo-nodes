@@ -55,11 +55,12 @@ class OboboInputLora(OboboBaseNode):
     CATEGORY = "obobo/input"
     DESCRIPTION = "Connect to a LoRa loader"
 
-    def process_loras(self, lora_path, lora_strength, name, tooltip="", prev_model=None, clip=None):
+    def process_loras(self, lora_path, lora_strength, name, tooltip="", prev_model=None, clip=None, optional_input=False):
         """Process and return the LoRA selections"""
         lines = lora_path.split('\n')
         rows = lines[0:1]
         prev_model = prev_model if prev_model is not None else None
         clip = clip if clip is not None else None
         self.set_tooltip(tooltip)
+        self.set_optional_input(optional_input)
         return  prev_model, clip, rows, lora_strength

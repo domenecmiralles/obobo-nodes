@@ -40,11 +40,12 @@ class OboboInputText(OboboBaseNode):
     CATEGORY = "obobo/input"
     DESCRIPTION = "A simple text input node for Obobo workflows"
 
-    def process_text(self, text, name, tooltip=""):
+    def process_text(self, text, name, tooltip="", optional_input=False):
         """Process and return the text input"""
         try:
             self.text = text
             self.set_tooltip(tooltip)
+            self.set_optional_input(optional_input)
             logger.info(f"Text input processed: {text[:50]}..." if len(text) > 50 else f"Text input processed: {text}")
             return (text,)
         except Exception as e:

@@ -29,6 +29,7 @@ class OboboInputVideo(OboboInputMedia):
     CATEGORY = "obobo/input"
     DESCRIPTION = "Specify a video file path for Obobo workflows"
 
-    def process_video(self, video_path, name, tooltip=""):
+    def process_video(self, video_path, name, tooltip="", optional_input=False):
         self.set_tooltip(tooltip)
+        self.set_optional_input(optional_input)
         return self.process_media(video_path, name, tooltip)

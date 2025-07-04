@@ -41,11 +41,12 @@ class OboboInputNumber(OboboBaseNode):
     CATEGORY = "obobo/input"
     DESCRIPTION = "A simple numeric input node for Obobo workflows, providing both float and integer outputs"
 
-    def process_number(self, number, name, tooltip=""):
+    def process_number(self, number, name, tooltip="", optional_input=False):
         """Process and return the number input as both float and int"""
         try:
             self.number = number
             self.set_tooltip(tooltip)
+            self.set_optional_input(optional_input)
             logger.info(f"Number input processed: {number}")
             return (float(number), int(number))
         except Exception as e:

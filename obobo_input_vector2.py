@@ -49,13 +49,13 @@ class OboboInputVector2(OboboBaseNode):
     CATEGORY = "obobo/input"
     DESCRIPTION = "Input node for 2D vectors (width and height) for Obobo workflows"
 
-    def process_vector2(self, x, y, name, tooltip=""):
+    def process_vector2(self, x, y, name, tooltip="", optional_input=False):
         """Process and return the vector components"""
         try:
             self.x = x
             self.y = y
             self.set_tooltip(tooltip)
-            
+            self.set_optional_input(optional_input)
             logger.info(f"Vector2 input processed: ({x}, {y})")
             
             return (x, y)

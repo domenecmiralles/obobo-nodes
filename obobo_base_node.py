@@ -15,14 +15,19 @@ class OboboBaseNode:
     def get_base_input_types(cls):
         """Returns the base input types that all Obobo nodes should have"""
         return {
-            "required": {},
+            "required": {
+            },
             "optional": {
                 "tooltip": ("STRING", {
                     "default": "",
                     "multiline": True,
                     "placeholder": "Enter tooltip text here...",
                     "tooltip": "Tooltip text for documentation/reference (not used in processing)"
-                })
+                }),
+                "optional_input": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "True = optional input, False = required input"
+                }),
             }
         }
 
@@ -38,3 +43,11 @@ class OboboBaseNode:
     def set_tooltip(self, tooltip):
         """Helper method to set the tooltip value"""
         self.tooltip = tooltip 
+        
+    def get_optional_input(self):
+        """Helper method to get the optional_input value"""
+        return getattr(self, 'optional_input', False)
+
+    def set_optional_input(self, optional_input):
+        """Helper method to set the optional_input value"""
+        self.optional_input = optional_input
