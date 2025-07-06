@@ -15,20 +15,19 @@ sys.path.insert(0, current_dir)
 logger = logging.getLogger(__name__)
 
 # Import existing Obobo nodes
-from .obobo_base_node import OboboBaseNode  # Base class - not instantiable
-from .obobo_input_text import OboboInputText
-from .obobo_input_number import OboboInputNumber
-from .obobo_input_image import OboboInputImage
-from .obobo_input_video import OboboInputVideo
-from .obobo_input_audio import OboboInputAudio
-from .obobo_input_lora import OboboInputLora
-from .obobo_input_vector2 import OboboInputVector2
-from .obobo_output import OboboOutput
-from .obobo_conditional_bypass import OboboConditionalBypass
+from .nodes.obobo_input_text import OboboInputText
+from .nodes.obobo_input_number import OboboInputNumber
+from .nodes.obobo_input_image import OboboInputImage
+from .nodes.obobo_input_video import OboboInputVideo
+from .nodes.obobo_input_audio import OboboInputAudio
+from .nodes.obobo_input_lora import OboboInputLora
+from .nodes.obobo_input_vector2 import OboboInputVector2
+from .nodes.obobo_output import OboboOutput
+from .nodes.obobo_conditional_bypass import OboboConditionalBypass
 
 # Import worker web extension
 try:
-    from . import web as worker_web
+    from .worker import web as worker_web
     logger.info("🎬 Obobo Worker web extension loaded successfully")
 except Exception as e:
     logger.error(f"🎬 Failed to load Obobo Worker web extension: {e}")
@@ -60,7 +59,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 }
 
 # Web extension mappings (required by ComfyUI for JavaScript extensions)
-WEB_DIRECTORY = "./js"
+WEB_DIRECTORY = "./worker/js"
 
 # Register with ComfyUI
 __all__ = [

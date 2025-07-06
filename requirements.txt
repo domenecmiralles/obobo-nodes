@@ -17,7 +17,7 @@
 # Note: These nodes are designed to be lightweight and have minimal dependencies
 # to ensure maximum compatibility with different ComfyUI setups. 
 
--e  ../../../libs/oboboready/
+# -e  ../../../libs/oboboready/
 GPUtil
 pyyaml
 safetensors
@@ -26,3 +26,5 @@ python-dotenv==1.0.1
 boto3
 pillow
 bson
+pydantic
+psutil

@@ -13,6 +13,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Path to ComfyUI root directory (3 levels up from worker/utils/)
+COMFYUI_PATH = "../../.."
+
 
 class QueuedJob(BaseModel):
     job: dict  # generation job
@@ -149,7 +152,7 @@ def process_lora_array(loras_array, node):
     print(f"DEBUG: LoRA URL: {lora_url}, strength: {lora_strength}")
 
     # Download the LoRA file
-    filepath = download_file(lora_url, "ComfyUI/models/loras/obobo")
+    filepath = download_file(lora_url, f"{COMFYUI_PATH}/models/loras/obobo")
     if not filepath:
         print(f"ERROR: Failed to download LoRA from {lora_url}")
         return
@@ -189,19 +192,6 @@ def get_next_node_n(workflow) -> str:
     """ " Return the highest node_n in a workflow +1."""
     return str(max([int(n) for n in workflow.keys()]) + 1)
 
-def set_block_swap_args(workflow):
-    """
-    Set the block_swap_args for the workflow.
-    """
-    for node in workflow.values():
-        if "WanVideoBlockSwap" in node["class_type"]:
-            print("DEBUG: Setting block_swap_args for WanVideoBlockSwap to 8")
-            node["inputs"]["blocks_to_swap"] = 8
-            node["inputs"]["offload_img_emb"] = False
-            node["inputs"]["offload_txt_emb"] = False
-            node["inputs"]["use_non_blocking"] = False
-            node["inputs"]["vace_blocks_to_swap"] = 0
-    return workflow
 
 def fill_workflow_obobo_inputs(
     workflow,
@@ -221,10 +211,8 @@ def fill_workflow_obobo_inputs(
     # Initializations for the loras
     node_position_to_input_name = {2: "url", 3: "strength"}
     lora_nodes = {}
-    LORA_PATH = "ComfyUI/models/loras/obobo"
-
-    # to experiment with block swap in wan2.1
-    workflow = set_block_swap_args(workflow)
+    LORA_PATH = f"{COMFYUI_PATH}/models/loras/obobo"
+    
 
     for key, node in workflow.items():
         if "OboboOutput" in node["class_type"]:
@@ -345,7 +333,7 @@ def fill_workflow_obobo_inputs(
                     )
                     if isinstance(input_value, str):
                         audio_path = download_file(
-                            input_value, "ComfyUI/input/obobo/audios"
+                            input_value, f"{COMFYUI_PATH}/input/obobo/audios"
                         )
                         print(f"DEBUG: Downloaded audio to: {audio_path}")
                         if audio_path:
@@ -361,7 +349,7 @@ def fill_workflow_obobo_inputs(
                 elif input_type == "image":
                     if isinstance(input_value, str):
                         filepath = download_file(
-                            input_value, "ComfyUI/input/obobo/images"
+                            input_value, f"{COMFYUI_PATH}/input/obobo/images"
                         )
                         if filepath:
                             # Make path absolute
@@ -376,7 +364,7 @@ def fill_workflow_obobo_inputs(
                         and isinstance(input_value["value"], str)
                     ):
                         filepath = download_file(
-                            input_value["value"], "ComfyUI/input/obobo/images"
+                            input_value["value"], f"{COMFYUI_PATH}/input/obobo/images"
                         )
                         if filepath:
                             # Make path absolute
@@ -394,7 +382,7 @@ def fill_workflow_obobo_inputs(
                 elif input_type == "video":
                     if isinstance(input_value, str):
                         video_path = download_file(
-                            input_value, "ComfyUI/input/obobo/videos"
+                            input_value, f"{COMFYUI_PATH}/input/obobo/videos"
                         )
                         if video_path:
                             video_path = os.path.abspath(video_path)
