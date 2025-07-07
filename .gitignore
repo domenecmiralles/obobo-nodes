@@ -3,3 +3,4 @@ __pycache__/
 .worker_state.json
 tmp/
 logs/
+nonapi/

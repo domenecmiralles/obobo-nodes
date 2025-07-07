@@ -372,51 +372,58 @@ class OboboWorkerManager {
             // Get the current ComfyUI graph
             const workflow = app.graph.serialize();
             
-            console.log("🎬 Saving workflow to S3...");
+            console.log("🎬 Saving workflows (normal + API) to S3...");
             
             // Show loading spinner
             this.showSaveSpinner();
             
             app.extensionManager.toast.add({
                 severity: "info",
-                summary: "🎬 Saving Workflow",
-                detail: "Uploading workflow to S3...",
+                summary: "🎬 Saving Workflows",
+                detail: "Converting and uploading workflows to S3...",
                 life: 3000
             });
+
+            // Get both normal workflow and API workflow
+            const apiData = await app.graphToPrompt(workflow, true);
+            const apiWorkflow = apiData.output;
             
-            // Send workflow to backend for S3 upload
+            // Send both workflows to backend for S3 upload
             const response = await api.fetchApi("/obobo/save_workflow", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
                 },
                 body: JSON.stringify({
-                    workflow_json: workflow
+                    workflow: {
+                        nonapi: workflow,
+                        api: apiWorkflow
+                    }
                 })
             });
             
             const result = await response.json();
             
             if (result.success) {
-                console.log("🎬 Workflow saved successfully to S3");
+                console.log("🎬 Workflows saved successfully to S3");
                 
                 app.extensionManager.toast.add({
                     severity: "success",
-                    summary: "🎬 Workflow Saved",
-                    detail: "Successfully saved workflow to S3",
+                    summary: "🎬 Workflows Saved",
+                    detail: "Successfully saved both normal and API workflows to S3",
                     life: 3000
                 });
             } else {
-                throw new Error(result.message || "Failed to save workflow");
+                throw new Error(result.message || "Failed to save workflows");
             }
             
         } catch (error) {
-            console.error("🎬 Failed to save workflow:", error);
+            console.error("🎬 Failed to save workflows:", error);
             
             app.extensionManager.toast.add({
                 severity: "error",
                 summary: "🎬 Save Failed",
-                detail: `Failed to save workflow: ${error.message}`,
+                detail: `Failed to save workflows: ${error.message}`,
                 life: 5000
             });
         } finally {
@@ -458,7 +465,7 @@ class OboboWorkerManager {
         
         // Create loading text
         const loadingText = document.createElement('div');
-        loadingText.textContent = '🎬 Saving workflow to S3...';
+        loadingText.textContent = '🎬 Saving workflows to S3...';
         loadingText.style.cssText = `
             color: white;
             font-size: 18px;
@@ -468,7 +475,7 @@ class OboboWorkerManager {
         
         // Create subtitle
         const subtitle = document.createElement('div');
-        subtitle.textContent = 'Please wait while we upload your workflow';
+        subtitle.textContent = 'Please wait while we upload your workflows';
         subtitle.style.cssText = `
             color: #ccc;
             font-size: 14px;
@@ -744,20 +751,6 @@ app.registerExtension({
                 claimButton.style.fontSize = '14px';
                 claimButton.style.display = 'none';  // Initially hidden
                 
-                // Add Load Workflow button
-                const loadWorkflowButton = document.createElement('button');
-                loadWorkflowButton.id = 'obobo-load-workflow-button';
-                loadWorkflowButton.textContent = 'Load Current Workflow';
-                loadWorkflowButton.style.width = '100%';
-                loadWorkflowButton.style.padding = '12px';
-                loadWorkflowButton.style.backgroundColor = '#9C27B0';
-                loadWorkflowButton.style.color = 'white';
-                loadWorkflowButton.style.border = 'none';
-                loadWorkflowButton.style.borderRadius = '4px';
-                loadWorkflowButton.style.cursor = 'pointer';
-                loadWorkflowButton.style.fontWeight = 'bold';
-                loadWorkflowButton.style.fontSize = '14px';
-                
                 // Add Save Workflow button
                 const saveWorkflowButton = document.createElement('button');
                 saveWorkflowButton.id = 'obobo-save-workflow-button';
@@ -771,12 +764,11 @@ app.registerExtension({
                 saveWorkflowButton.style.cursor = 'pointer';
                 saveWorkflowButton.style.fontWeight = 'bold';
                 saveWorkflowButton.style.fontSize = '14px';
-                
+
                 buttonContainer.appendChild(startButton);
                 buttonContainer.appendChild(stopButton);
                 buttonContainer.appendChild(resumeButton);
                 buttonContainer.appendChild(claimButton);
-                buttonContainer.appendChild(loadWorkflowButton);
                 buttonContainer.appendChild(saveWorkflowButton);
                 
                 // Info text
@@ -802,10 +794,6 @@ app.registerExtension({
                 
                 claimButton.addEventListener('click', () => {
                     oboboWorkerManager.claimWorker();
-                });
-
-                loadWorkflowButton.addEventListener('click', () => {
-                    oboboWorkerManager.loadWorkflow();
                 });
 
                 saveWorkflowButton.addEventListener('click', () => {

@@ -192,7 +192,8 @@ async def get_current_workflow(request: Request) -> web.Response:
         
         if result["success"] and result["workers"]:
             worker_info = next(iter(result["workers"].values()))
-            workflow_url = worker_info.get("currently_editable_workflow")
+            editable_workflow = worker_info.get("editable_workflow", {})
+            workflow_url = editable_workflow.get("link") if editable_workflow else None
             
             if workflow_url:
                 return web.json_response({
@@ -221,15 +222,15 @@ async def save_workflow(request: Request) -> web.Response:
     """Save workflow JSON to S3 through the API"""
     try:
         data = await request.json()
-        workflow_json = data.get("workflow_json")
+        workflow_dict = data.get("workflow")
         
-        if not workflow_json:
+        if not workflow_dict or "nonapi" not in workflow_dict or "api" not in workflow_dict:
             return web.json_response({
                 "success": False,
-                "message": "No workflow JSON provided"
+                "message": "Invalid workflow format. Expected workflow: {nonapi: ..., api: ...}"
             }, status=400)
         
-        # Get worker status to find the currently_editable_workflow URL
+        # Get worker status to find the workflow URL and node ID
         wm = get_worker_manager()
         result = wm.get_worker_status()
         
@@ -240,15 +241,16 @@ async def save_workflow(request: Request) -> web.Response:
             }, status=404)
         
         worker_info = next(iter(result["workers"].values()))
-        workflow_url = worker_info.get("currently_editable_workflow")
+        workflow_node_id = worker_info.get("current_workflow_node_id")
+
         
-        if not workflow_url:
+        if not workflow_node_id:
             return web.json_response({
                 "success": False,
-                "message": "No workflow currently assigned to worker"
+                "message": "Missing required worker information (workflow node ID)"
             }, status=404)
         
-        # Make API request to save the workflow
+        # Make API request to save both workflows
         import aiohttp
         import json
         
@@ -257,15 +259,17 @@ async def save_workflow(request: Request) -> web.Response:
         
         async with aiohttp.ClientSession() as session:
             async with session.post(save_url, json={
-                "workflow_url": workflow_url,
-                "workflow_json": workflow_json
+                #"workflow_url": workflow_url,
+                "workflow": workflow_dict,
+                "workflow_node_id": workflow_node_id
             }) as response:
                 if response.status == 200:
                     api_result = await response.json()
                     return web.json_response({
                         "success": True,
-                        "message": "Workflow saved successfully",
-                        "url": api_result.get("url")
+                        "message": "Workflows saved successfully",
+                        "url": api_result.get("url"),
+                        "api_url": api_result.get("api_url")
                     })
                 else:
                     error_text = await response.text()

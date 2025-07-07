@@ -191,7 +191,7 @@ class Worker:
                     logger.info(f"Processing batch with {len(batch['generations'])} generations")
                     await self.process_batch(batch) 
                 else:
-                    logger.info(f"No batches available, waiting {self.batch_wait_time} seconds...")
+                    #logger.info(f"No batches available, waiting {self.batch_wait_time} seconds...")
                     await asyncio.sleep(self.batch_wait_time)
 
             except Exception as e:
