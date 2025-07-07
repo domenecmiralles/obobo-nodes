@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 import requests
 from utils.device import get_gpu_info
-from utils.database import get_s3_client
+# from utils.database import get_s3_client
 from utils.comfyui import queue_claimed_jobs, jobs_in_comfyui_queue, check_completed_jobs_and_get_outputs, upload_completed_jobs, unload_models_and_empty_memory
 from oboboready.data.models import GenerationBatch
 
@@ -33,7 +33,7 @@ class Worker:
         self.gpus = get_gpu_info()
         self.batch = batch
         self.comfyui_server = comfyui_server
-        self.s3_client = get_s3_client()
+        # self.s3_client = get_s3_client()
         self.comfyui_output_path = f"{COMFYUI_PATH}/output"
         self.last_workflow_url = None
         self.batch_wait_time = 15
@@ -123,8 +123,8 @@ class Worker:
                     queued_jobs,
                     self.api_url,
                     "movies",
-                    self.s3_client,
-                    "obobo-media-production",
+                    # self.s3_client,
+                    # "obobo-media-production",
                 )
                 if len(queued_jobs) == 0:
                     break
@@ -218,7 +218,7 @@ def main():
     parser.add_argument(
         "--api-url",
         required=False,
-        default="https://inference.obobo.net", #"http://127.0.0.1:8001",
+        default="http://127.0.0.1:8001", #"https://inference.obobo.net", #"http://127.0.0.1:8001",
         help="URL of the inference API",
     )
     parser.add_argument("--worker_id", required=True, help="Unique worker ID")

@@ -661,8 +661,8 @@ def upload_completed_jobs(
     queued_jobs,
     api_url,
     s3_prefix,
-    s3_client,
-    s3_bucket="obobo-media-production",
+    # s3_client,
+    # s3_bucket="obobo-media-production",
 ):
     extensions = {
         "image": ["png", "jpg", "jpeg"],
@@ -697,24 +697,33 @@ def upload_completed_jobs(
         # Use new create_display_image function for image/video
         if generation_type in ("image", "video"):
             display_image = create_display_image(job.output_path, generation_type)
-            if display_image and os.path.exists(display_image):
-                display_image_filename = display_image.split("/")[-1]
-                s3_client.upload_file(
-                    display_image,
-                    s3_bucket,
-                    f"{s3_prefix}/{job.job['movie_id']}/{display_image_filename}",
-                )
-                display_image_s3_path = f"https://media.obobo.net/{s3_prefix}/{job.job['movie_id']}/{display_image_filename}"
-        # For audio/text, display_image remains empty
 
-        s3_client.upload_file(
-            job.output_path,
-            s3_bucket,
-            f"{s3_prefix}/{job.job['movie_id']}/{filename}",
-        )
-        s3_path = (
-            f"https://media.obobo.net/{s3_prefix}/{job.job['movie_id']}/{filename}"
-        )
+        # Upload main file using API endpoint
+        with open(job.output_path, 'rb') as f:
+            files = {'file': (filename, f, f'application/{extension}')}
+            response = requests.post(
+                f"{api_url}/v1/upload/{job.job['movie_id']}",
+                files=files,
+                params={'prefix': s3_prefix}
+            )
+            if response.status_code != 200:
+                print(f"Failed to upload file: {response.text}")
+                continue
+            result = response.json()
+            s3_path = result['url']
+
+        # Upload display image if exists
+        if display_image and os.path.exists(display_image):
+            display_image_filename = display_image.split("/")[-1]
+            with open(display_image, 'rb') as f:
+                files = {'file': (display_image_filename, f, 'image/webp')}
+                response = requests.post(
+                    f"{api_url}/v1/upload/{job.job['movie_id']}",
+                    files=files,
+                    params={'prefix': s3_prefix}
+                )
+                if response.status_code == 200:
+                    display_image_s3_path = response.json()['url']
 
         inference_output = {
             "type": generation_type,
@@ -727,7 +736,10 @@ def upload_completed_jobs(
         )
 
         # update the job in the database with the output
-        requests.post(f"{api_url}/v1/inference/update_generation_status_to_success/{str(job.job['_id'])}", json={"output": inference_output, "inference": job.job["inference"]})
+        requests.post(
+            f"{api_url}/v1/inference/update_generation_status_to_success/{str(job.job['_id'])}",
+            json={"output": inference_output, "inference": job.job["inference"]}
+        )
 
         # pop from queued_jobs list
         queued_jobs.remove(job)

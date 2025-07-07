@@ -30,16 +30,18 @@ def routes():
     return [
         web.post("/obobo/start_worker", start_worker),
         web.post("/obobo/stop_worker", stop_worker),
+        web.post("/obobo/resume_worker", resume_worker),
         web.get("/obobo/worker_status", get_worker_status),
         web.get("/obobo/worker_logs/{worker_id}", get_worker_logs),
+        web.get("/obobo/current_workflow", get_current_workflow),
+        web.post("/obobo/save_workflow", save_workflow),
     ]
 
 async def start_worker(request: Request) -> web.Response:
     """Start the worker process"""
     try:
         data = await request.json()
-        api_url = data.get("api_url", "https://inference.obobo.net")
-        # api_url = data.get("api_url", "http://127.0.0.1:8001")
+        api_url = data.get("api_url", "http://127.0.0.1:8001")
         
         # Use worker manager to start the worker
         wm = get_worker_manager(api_url)
@@ -50,7 +52,6 @@ async def start_worker(request: Request) -> web.Response:
                 "success": True,
                 "message": result["message"],
                 "worker_id": result["worker_id"],
-                "secret_id": result["worker_id"],  # For compatibility with existing JS
                 "pid": result["pid"],
                 "api_registered": result.get("api_registered", False)
             })
@@ -69,7 +70,7 @@ async def start_worker(request: Request) -> web.Response:
         }, status=500)
 
 async def stop_worker(request: Request) -> web.Response:
-    """Stop worker process"""
+    """Set worker to inactive state"""
     try:
         # Use worker manager to stop worker
         wm = get_worker_manager()
@@ -90,6 +91,33 @@ async def stop_worker(request: Request) -> web.Response:
         
     except Exception as e:
         logger.error(f"Failed to stop worker: {e}")
+        return web.json_response({
+            "success": False,
+            "message": str(e)
+        }, status=500)
+
+async def resume_worker(request: Request) -> web.Response:
+    """Set worker to active state"""
+    try:
+        # Use worker manager to resume worker
+        wm = get_worker_manager()
+        result = wm._register_worker_in_api(wm.worker_id, wm.api_url)
+        
+        if result:
+            return web.json_response({
+                "success": True,
+                "message": "Worker set to active",
+                "worker_id": wm.worker_id
+            })
+        else:
+            return web.json_response({
+                "success": False,
+                "message": "Failed to set worker active",
+                "worker_id": wm.worker_id
+            }, status=400)
+        
+    except Exception as e:
+        logger.error(f"Failed to resume worker: {e}")
         return web.json_response({
             "success": False,
             "message": str(e)
@@ -156,6 +184,103 @@ async def get_worker_logs(request: Request) -> web.Response:
             "message": str(e)
         }, status=500)
 
+async def get_current_workflow(request: Request) -> web.Response:
+    """Get the current workflow URL for the worker"""
+    try:
+        wm = get_worker_manager()
+        result = wm.get_worker_status()
+        
+        if result["success"] and result["workers"]:
+            worker_info = next(iter(result["workers"].values()))
+            workflow_url = worker_info.get("currently_editable_workflow")
+            
+            if workflow_url:
+                return web.json_response({
+                    "success": True,
+                    "workflow_url": workflow_url
+                })
+            else:
+                return web.json_response({
+                    "success": False,
+                    "message": "No workflow currently assigned"
+                }, status=404)
+        else:
+            return web.json_response({
+                "success": False,
+                "message": "No active worker found"
+            }, status=404)
+            
+    except Exception as e:
+        logger.error(f"Failed to get current workflow: {e}")
+        return web.json_response({
+            "success": False,
+            "message": str(e)
+        }, status=500)
+
+async def save_workflow(request: Request) -> web.Response:
+    """Save workflow JSON to S3 through the API"""
+    try:
+        data = await request.json()
+        workflow_json = data.get("workflow_json")
+        
+        if not workflow_json:
+            return web.json_response({
+                "success": False,
+                "message": "No workflow JSON provided"
+            }, status=400)
+        
+        # Get worker status to find the currently_editable_workflow URL
+        wm = get_worker_manager()
+        result = wm.get_worker_status()
+        
+        if not result["success"] or not result["workers"]:
+            return web.json_response({
+                "success": False,
+                "message": "No active worker found"
+            }, status=404)
+        
+        worker_info = next(iter(result["workers"].values()))
+        workflow_url = worker_info.get("currently_editable_workflow")
+        
+        if not workflow_url:
+            return web.json_response({
+                "success": False,
+                "message": "No workflow currently assigned to worker"
+            }, status=404)
+        
+        # Make API request to save the workflow
+        import aiohttp
+        import json
+        
+        api_url = wm.api_url or "http://127.0.0.1:8001"
+        save_url = f"{api_url}/v1/upload/save-workflow"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(save_url, json={
+                "workflow_url": workflow_url,
+                "workflow_json": workflow_json
+            }) as response:
+                if response.status == 200:
+                    api_result = await response.json()
+                    return web.json_response({
+                        "success": True,
+                        "message": "Workflow saved successfully",
+                        "url": api_result.get("url")
+                    })
+                else:
+                    error_text = await response.text()
+                    return web.json_response({
+                        "success": False,
+                        "message": f"API request failed: {error_text}"
+                    }, status=response.status)
+                    
+    except Exception as e:
+        logger.error(f"Failed to save workflow: {e}")
+        return web.json_response({
+            "success": False,
+            "message": str(e)
+        }, status=500)
+
 # Required by ComfyUI
 @web.middleware
 async def cors_handler(request, handler):
@@ -178,6 +303,10 @@ async def start_worker_route(request):
 async def stop_worker_route(request):
     return await stop_worker(request)
 
+@PromptServer.instance.routes.post("/obobo/resume_worker")
+async def resume_worker_route(request):
+    return await resume_worker(request)
+
 @PromptServer.instance.routes.get("/obobo/worker_status")
 async def get_worker_status_route(request):
     return await get_worker_status(request)
@@ -185,6 +314,14 @@ async def get_worker_status_route(request):
 @PromptServer.instance.routes.get("/obobo/worker_logs/{worker_id}")
 async def get_worker_logs_route(request):
     return await get_worker_logs(request)
+
+@PromptServer.instance.routes.get("/obobo/current_workflow")
+async def get_current_workflow_route(request):
+    return await get_current_workflow(request)
+
+@PromptServer.instance.routes.post("/obobo/save_workflow")
+async def save_workflow_route(request):
+    return await save_workflow(request)
 
 # Export the routes function for ComfyUI
 __all__ = ['routes'] 

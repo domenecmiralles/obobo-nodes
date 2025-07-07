@@ -7,12 +7,16 @@ class OboboWorkerManager {
     constructor() {
         this.workerStatus = "🔴 No Worker";
         this.isWorkerActive = false;
+        this.hasWorkerProcess = false;  // New flag to track if worker process exists
         this.totalWorkers = 0;
         this.workers = {};
         this.sidebarElement = null;
         
         // Load status on startup
         this.loadWorkerStatus();
+        
+        // Check for auto-load workflow parameter
+        this.checkAutoLoadWorkflow();
         
         // Refresh status periodically
         setInterval(() => {
@@ -30,10 +34,13 @@ class OboboWorkerManager {
                 this.totalWorkers = result.total_workers || 0;
                 this.workers = result.workers || {};
                 
+                // Update hasWorkerProcess if we have any workers registered
+                this.hasWorkerProcess = this.totalWorkers > 0;
+                
                 if (this.activeWorkers > 0) {
                     this.workerStatus = "🟢 Active";
                     this.isWorkerActive = true;
-                } else if (this.totalWorkers > 0) {
+                } else if (this.hasWorkerProcess) {
                     this.workerStatus = "🟡 Inactive";
                     this.isWorkerActive = false;
                 } else {
@@ -54,6 +61,7 @@ class OboboWorkerManager {
             const detailsEl = this.sidebarElement.querySelector("#obobo-details");
             const startButton = this.sidebarElement.querySelector("#obobo-start-button");
             const stopButton = this.sidebarElement.querySelector("#obobo-stop-button");
+            const resumeButton = this.sidebarElement.querySelector("#obobo-resume-button");
             const claimButton = this.sidebarElement.querySelector("#obobo-claim-button");
             
             if (statusEl) {
@@ -63,7 +71,7 @@ class OboboWorkerManager {
             // Update details
             if (detailsEl) {
                 let detailsText = "";
-                if (this.totalWorkers > 0) {
+                if (this.hasWorkerProcess) {
                     const workerInfo = Object.values(this.workers)[0];
                     if (workerInfo) {
                         detailsText = `Worker: ${workerInfo.worker_id}`;
@@ -74,37 +82,41 @@ class OboboWorkerManager {
                 detailsEl.textContent = detailsText;
             }
             
-            // Show only start OR stop button, not both
-            if (startButton && stopButton) {
-                if (this.isWorkerActive) {
-                    startButton.style.display = "none";
-                    stopButton.style.display = "block";
-                } else {
+            // Show appropriate buttons based on state
+            if (startButton && stopButton && resumeButton) {
+                if (!this.hasWorkerProcess) {
+                    // No worker process exists - show start button only
                     startButton.style.display = "block";
                     stopButton.style.display = "none";
+                    resumeButton.style.display = "none";
+                } else if (this.isWorkerActive) {
+                    // Worker exists and is active - show stop button only
+                    startButton.style.display = "none";
+                    stopButton.style.display = "block";
+                    resumeButton.style.display = "none";
+                } else {
+                    // Worker exists but is inactive - show resume button only
+                    startButton.style.display = "none";
+                    stopButton.style.display = "none";
+                    resumeButton.style.display = "block";
                 }
             }
             
             // Show claim button only when we have a worker
             if (claimButton) {
-                if (this.totalWorkers > 0) {
-                    claimButton.style.display = "block";
-                } else {
-                    claimButton.style.display = "none";
-                }
+                claimButton.style.display = this.hasWorkerProcess ? "block" : "none";
             }
         }
     }
     
     claimWorker() {
-        if (this.totalWorkers > 0) {
+        if (this.hasWorkerProcess) {
             const workerInfo = Object.values(this.workers)[0];
             if (workerInfo && workerInfo.worker_id) {
                 const url = `http://localhost:5173/start_worker/${workerInfo.worker_id}`;
                 window.open(url, '_blank');
                 console.log("🎬 Opening claim worker URL:", url);
                 
-                // Show info toast
                 app.extensionManager.toast.add({
                     severity: "info",
                     summary: "🎬 Claim Worker",
@@ -124,9 +136,13 @@ class OboboWorkerManager {
     }
     
     async startWorker() {
+        if (this.hasWorkerProcess) {
+            console.error("🎬 Worker process already exists");
+            return;
+        }
+        
         console.log("🎬 Starting worker...");
         
-        // Show starting toast
         app.extensionManager.toast.add({
             severity: "info",
             summary: "🎬 Obobo Worker",
@@ -144,7 +160,8 @@ class OboboWorkerManager {
                     "Content-Type": "application/json",
                 },
                 body: JSON.stringify({
-                    api_url: "https://inference.obobo.net"
+                    api_url: "http://127.0.0.1:8001", //"https://inference.obobo.net"
+                    private: true  // Set worker as private
                 })
             });
             
@@ -152,15 +169,14 @@ class OboboWorkerManager {
             
             if (result.success) {
                 console.log("🎬 Worker started successfully");
+                this.hasWorkerProcess = true;
                 
-                // Refresh worker status
                 await this.loadWorkerStatus();
                 
-                // Show success toast
                 app.extensionManager.toast.add({
                     severity: "success",
                     summary: "🎬 Worker Started",
-                    detail: `Worker is now active and processing jobs.`,
+                    detail: `Worker process created and is now active.`,
                     life: 5000
                 });
                 
@@ -172,6 +188,7 @@ class OboboWorkerManager {
             console.error("🎬 Failed to start worker:", error);
             this.workerStatus = "❌ Failed to start";
             this.isWorkerActive = false;
+            this.hasWorkerProcess = false;
             this.updateSidebarContent();
             
             app.extensionManager.toast.add({
@@ -184,17 +201,21 @@ class OboboWorkerManager {
     }
     
     async stopWorker() {
-        console.log("🎬 Stopping worker...");
+        if (!this.hasWorkerProcess || !this.isWorkerActive) {
+            console.error("🎬 No active worker to stop");
+            return;
+        }
         
-        // Show stopping toast
+        console.log("🎬 Setting worker to inactive...");
+        
         app.extensionManager.toast.add({
             severity: "info",
             summary: "🎬 Obobo Worker",
-            detail: "Stopping worker...",
+            detail: "Setting worker to inactive...",
             life: 3000
         });
         
-        this.workerStatus = "🟡 Stopping...";
+        this.workerStatus = "🟡 Updating...";
         this.updateSidebarContent();
         
         try {
@@ -203,22 +224,20 @@ class OboboWorkerManager {
                 headers: {
                     "Content-Type": "application/json",
                 },
-                body: JSON.stringify({}) // Send empty JSON object
+                body: JSON.stringify({})
             });
             
             const result = await response.json();
             
             if (result.success) {
-                console.log("🎬 Worker stopped successfully");
+                console.log("🎬 Worker set to inactive successfully");
                 
-                // Refresh worker status
                 await this.loadWorkerStatus();
                 
-                // Show success toast
                 app.extensionManager.toast.add({
                     severity: "success",
-                    summary: "🎬 Worker Stopped",
-                    detail: "Worker has been marked as inactive",
+                    summary: "🎬 Worker Updated",
+                    detail: "Worker has been set to inactive",
                     life: 3000
                 });
             } else {
@@ -227,15 +246,377 @@ class OboboWorkerManager {
             
         } catch (error) {
             console.error("🎬 Failed to stop worker:", error);
-            this.workerStatus = "❌ Failed to stop";
+            this.workerStatus = "❌ Failed to update";
             this.updateSidebarContent();
             
             app.extensionManager.toast.add({
                 severity: "error",
-                summary: "🎬 Worker Stop Failed",
-                detail: `Failed to stop worker: ${error.message}`,
+                summary: "🎬 Worker Update Failed",
+                detail: `Failed to set worker inactive: ${error.message}`,
                 life: 5000
             });
+        }
+    }
+    
+    async resumeWorker() {
+        if (!this.hasWorkerProcess || this.isWorkerActive) {
+            console.error("🎬 No inactive worker to resume");
+            return;
+        }
+        
+        console.log("🎬 Setting worker to active...");
+        
+        app.extensionManager.toast.add({
+            severity: "info",
+            summary: "🎬 Obobo Worker",
+            detail: "Setting worker to active...",
+            life: 3000
+        });
+        
+        this.workerStatus = "🟡 Updating...";
+        this.updateSidebarContent();
+        
+        try {
+            const response = await api.fetchApi("/obobo/resume_worker", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({})
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                console.log("🎬 Worker set to active successfully");
+                
+                await this.loadWorkerStatus();
+                
+                app.extensionManager.toast.add({
+                    severity: "success",
+                    summary: "🎬 Worker Updated",
+                    detail: "Worker has been set to active",
+                    life: 3000
+                });
+            } else {
+                throw new Error(result.message || "Failed to resume worker");
+            }
+            
+        } catch (error) {
+            console.error("🎬 Failed to resume worker:", error);
+            this.workerStatus = "❌ Failed to update";
+            this.updateSidebarContent();
+            
+            app.extensionManager.toast.add({
+                severity: "error",
+                summary: "🎬 Worker Update Failed",
+                detail: `Failed to set worker active: ${error.message}`,
+                life: 5000
+            });
+        }
+    }
+
+    async loadWorkflow() {
+        try {
+            // Get workflow URL from our local endpoint
+            const response = await api.fetchApi("/obobo/current_workflow");
+            if (!response.ok) {
+                throw new Error(`Failed to get workflow URL: ${response.statusText}`);
+            }
+            
+            const data = await response.json();
+            if (!data.workflow_url) {
+                throw new Error("No workflow currently assigned to worker");
+            }
+            
+            console.log("🎬 Loading workflow from URL:", data.workflow_url);
+            
+            // Use the same loading logic as auto-load
+            await this.loadWorkflowFromUrl(data.workflow_url);
+            
+        } catch (error) {
+            console.error("🎬 Failed to load workflow:", error);
+            
+            app.extensionManager.toast.add({
+                severity: "error",
+                summary: "🎬 Load Workflow Failed",
+                detail: `Failed to load workflow: ${error.message}`,
+                life: 5000
+            });
+        }
+    }
+
+    async loadWorkflowFromUrl(workflowUrl) {
+        // Fetch and load the workflow
+        const workflowResponse = await fetch(workflowUrl);
+        if (!workflowResponse.ok) {
+            throw new Error(`Failed to fetch workflow: ${workflowResponse.statusText}`);
+        }
+        
+        const workflow = await workflowResponse.json();
+        app.loadGraphData(workflow);
+        
+        // Hide spinner if it's showing (for auto-load case)
+        this.hideAutoLoadSpinner();
+        
+        app.extensionManager.toast.add({
+            severity: "success",
+            summary: "🎬 Workflow Loaded",
+            detail: "Successfully loaded current workflow",
+            life: 3000
+        });
+    }
+
+    async saveWorkflow() {
+        try {
+            // Get the current ComfyUI graph
+            const workflow = app.graph.serialize();
+            
+            console.log("🎬 Saving workflow to S3...");
+            
+            // Show loading spinner
+            this.showSaveSpinner();
+            
+            app.extensionManager.toast.add({
+                severity: "info",
+                summary: "🎬 Saving Workflow",
+                detail: "Uploading workflow to S3...",
+                life: 3000
+            });
+            
+            // Send workflow to backend for S3 upload
+            const response = await api.fetchApi("/obobo/save_workflow", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    workflow_json: workflow
+                })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                console.log("🎬 Workflow saved successfully to S3");
+                
+                app.extensionManager.toast.add({
+                    severity: "success",
+                    summary: "🎬 Workflow Saved",
+                    detail: "Successfully saved workflow to S3",
+                    life: 3000
+                });
+            } else {
+                throw new Error(result.message || "Failed to save workflow");
+            }
+            
+        } catch (error) {
+            console.error("🎬 Failed to save workflow:", error);
+            
+            app.extensionManager.toast.add({
+                severity: "error",
+                summary: "🎬 Save Failed",
+                detail: `Failed to save workflow: ${error.message}`,
+                life: 5000
+            });
+        } finally {
+            // Always hide the spinner
+            this.hideSaveSpinner();
+        }
+    }
+
+    showSaveSpinner() {
+        // Create overlay
+        const overlay = document.createElement('div');
+        overlay.id = 'obobo-save-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        `;
+        
+        // Create spinner
+        const spinner = document.createElement('div');
+        spinner.style.cssText = `
+            width: 50px;
+            height: 50px;
+            border: 4px solid #333;
+            border-top: 4px solid #FF9800;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        `;
+        
+        // Create loading text
+        const loadingText = document.createElement('div');
+        loadingText.textContent = '🎬 Saving workflow to S3...';
+        loadingText.style.cssText = `
+            color: white;
+            font-size: 18px;
+            font-weight: 500;
+            text-align: center;
+        `;
+        
+        // Create subtitle
+        const subtitle = document.createElement('div');
+        subtitle.textContent = 'Please wait while we upload your workflow';
+        subtitle.style.cssText = `
+            color: #ccc;
+            font-size: 14px;
+            text-align: center;
+            margin-top: 8px;
+        `;
+        
+        // Add spinner animation CSS if not already present
+        if (!document.getElementById('obobo-spinner-styles')) {
+            const style = document.createElement('style');
+            style.id = 'obobo-spinner-styles';
+            style.textContent = `
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+        
+        overlay.appendChild(spinner);
+        overlay.appendChild(loadingText);
+        overlay.appendChild(subtitle);
+        document.body.appendChild(overlay);
+    }
+    
+    hideSaveSpinner() {
+        const overlay = document.getElementById('obobo-save-overlay');
+        if (overlay) {
+            overlay.remove();
+        }
+    }
+
+    checkAutoLoadWorkflow() {
+        // Check URL parameters for auto-load workflow
+        const urlParams = new URLSearchParams(window.location.search);
+        const autoLoad = urlParams.get('auto_load_workflow');
+        const workflowUrl = urlParams.get('workflow_url');
+        
+        if (autoLoad === 'true' && workflowUrl) {
+            console.log("🎬 Auto-loading workflow from URL parameter:", workflowUrl);
+            
+            // Show loading spinner
+            this.showAutoLoadSpinner();
+            
+            // Wait a bit for ComfyUI to fully load, then load the workflow
+            setTimeout(() => {
+                this.autoLoadWorkflowFromUrl(workflowUrl);
+            }, 2000);
+        }
+    }
+    
+    showAutoLoadSpinner() {
+        // Create overlay
+        const overlay = document.createElement('div');
+        overlay.id = 'obobo-autoload-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        `;
+        
+        // Create spinner
+        const spinner = document.createElement('div');
+        spinner.style.cssText = `
+            width: 50px;
+            height: 50px;
+            border: 4px solid #333;
+            border-top: 4px solid #4CAF50;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        `;
+        
+        // Create loading text
+        const loadingText = document.createElement('div');
+        loadingText.textContent = '🎬 Loading workflow from webapp...';
+        loadingText.style.cssText = `
+            color: white;
+            font-size: 18px;
+            font-weight: 500;
+            text-align: center;
+        `;
+        
+        // Create subtitle
+        const subtitle = document.createElement('div');
+        subtitle.textContent = 'Please wait while we prepare your workflow';
+        subtitle.style.cssText = `
+            color: #ccc;
+            font-size: 14px;
+            text-align: center;
+            margin-top: 8px;
+        `;
+        
+        // Add spinner animation CSS
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+        `;
+        document.head.appendChild(style);
+        
+        overlay.appendChild(spinner);
+        overlay.appendChild(loadingText);
+        overlay.appendChild(subtitle);
+        document.body.appendChild(overlay);
+    }
+    
+    hideAutoLoadSpinner() {
+        const overlay = document.getElementById('obobo-autoload-overlay');
+        if (overlay) {
+            overlay.remove();
+        }
+    }
+    
+    async autoLoadWorkflowFromUrl(workflowUrl) {
+        try {
+            console.log("🎬 Fetching workflow from:", workflowUrl);
+            
+            // Use the shared loading logic
+            await this.loadWorkflowFromUrl(workflowUrl);
+            
+            console.log("🎬 Auto-loaded workflow successfully");
+            
+        } catch (error) {
+            console.error("🎬 Failed to auto-load workflow:", error);
+            
+            // Show error toast
+            app.extensionManager.toast.add({
+                severity: "error",
+                summary: "🎬 Auto-Load Failed",
+                detail: `Failed to load workflow: ${error.message}`,
+                life: 5000
+            });
+        } finally {
+            // Always hide the spinner, whether success or failure
+            this.hideAutoLoadSpinner();
         }
     }
 }
@@ -323,7 +704,7 @@ app.registerExtension({
                 
                 const stopButton = document.createElement('button');
                 stopButton.id = 'obobo-stop-button';
-                stopButton.textContent = 'Stop Worker';
+                stopButton.textContent = 'Set Inactive';
                 stopButton.style.width = '100%';
                 stopButton.style.padding = '12px';
                 stopButton.style.backgroundColor = '#f44336';
@@ -334,6 +715,20 @@ app.registerExtension({
                 stopButton.style.fontWeight = 'bold';
                 stopButton.style.fontSize = '14px';
                 stopButton.style.display = 'none';  // Initially hidden
+                
+                const resumeButton = document.createElement('button');
+                resumeButton.id = 'obobo-resume-button';
+                resumeButton.textContent = 'Set Active';
+                resumeButton.style.width = '100%';
+                resumeButton.style.padding = '12px';
+                resumeButton.style.backgroundColor = '#4CAF50';
+                resumeButton.style.color = 'white';
+                resumeButton.style.border = 'none';
+                resumeButton.style.borderRadius = '4px';
+                resumeButton.style.cursor = 'pointer';
+                resumeButton.style.fontWeight = 'bold';
+                resumeButton.style.fontSize = '14px';
+                resumeButton.style.display = 'none';  // Initially hidden
                 
                 const claimButton = document.createElement('button');
                 claimButton.id = 'obobo-claim-button';
@@ -349,9 +744,40 @@ app.registerExtension({
                 claimButton.style.fontSize = '14px';
                 claimButton.style.display = 'none';  // Initially hidden
                 
+                // Add Load Workflow button
+                const loadWorkflowButton = document.createElement('button');
+                loadWorkflowButton.id = 'obobo-load-workflow-button';
+                loadWorkflowButton.textContent = 'Load Current Workflow';
+                loadWorkflowButton.style.width = '100%';
+                loadWorkflowButton.style.padding = '12px';
+                loadWorkflowButton.style.backgroundColor = '#9C27B0';
+                loadWorkflowButton.style.color = 'white';
+                loadWorkflowButton.style.border = 'none';
+                loadWorkflowButton.style.borderRadius = '4px';
+                loadWorkflowButton.style.cursor = 'pointer';
+                loadWorkflowButton.style.fontWeight = 'bold';
+                loadWorkflowButton.style.fontSize = '14px';
+                
+                // Add Save Workflow button
+                const saveWorkflowButton = document.createElement('button');
+                saveWorkflowButton.id = 'obobo-save-workflow-button';
+                saveWorkflowButton.textContent = 'Save Workflow';
+                saveWorkflowButton.style.width = '100%';
+                saveWorkflowButton.style.padding = '12px';
+                saveWorkflowButton.style.backgroundColor = '#FF9800';
+                saveWorkflowButton.style.color = 'white';
+                saveWorkflowButton.style.border = 'none';
+                saveWorkflowButton.style.borderRadius = '4px';
+                saveWorkflowButton.style.cursor = 'pointer';
+                saveWorkflowButton.style.fontWeight = 'bold';
+                saveWorkflowButton.style.fontSize = '14px';
+                
                 buttonContainer.appendChild(startButton);
                 buttonContainer.appendChild(stopButton);
+                buttonContainer.appendChild(resumeButton);
                 buttonContainer.appendChild(claimButton);
+                buttonContainer.appendChild(loadWorkflowButton);
+                buttonContainer.appendChild(saveWorkflowButton);
                 
                 // Info text
                 const infoText = document.createElement('div');
@@ -359,7 +785,7 @@ app.registerExtension({
                 infoText.style.color = '#aaa';
                 infoText.style.textAlign = 'center';
                 infoText.style.marginTop = 'auto';
-                infoText.textContent = 'Consistent worker processes jobs from the API';
+                infoText.textContent = 'Worker process runs continuously, toggle active/inactive state as needed';
                 
                 // Add event listeners
                 startButton.addEventListener('click', () => {
@@ -370,8 +796,20 @@ app.registerExtension({
                     oboboWorkerManager.stopWorker();
                 });
                 
+                resumeButton.addEventListener('click', () => {
+                    oboboWorkerManager.resumeWorker();
+                });
+                
                 claimButton.addEventListener('click', () => {
                     oboboWorkerManager.claimWorker();
+                });
+
+                loadWorkflowButton.addEventListener('click', () => {
+                    oboboWorkerManager.loadWorkflow();
+                });
+
+                saveWorkflowButton.addEventListener('click', () => {
+                    oboboWorkerManager.saveWorkflow();
                 });
                 
                 // Assemble the UI
