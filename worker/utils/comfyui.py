@@ -11,6 +11,7 @@ from PIL import Image
 import cv2
 from dotenv import load_dotenv
 import logging
+import mimetypes
 
 logger = logging.getLogger(__name__)
 
@@ -105,15 +106,13 @@ def handle_generation_error(error_message, job_id, api_url, server=None):
 
 
 def set_random_seed_in_workflow(workflow):
-    """
-    For each node in the workflow, if any input key contains 'seed', set it to a random int.
-    """
-    for node in workflow.values():
-        if "inputs" in node:
-            for key in node["inputs"]:
-                if "seed" in key.lower():
-                    node["inputs"][key] = random.randint(0, 2**32 - 1)
-                    logger.info(f"set seed to: ", node["inputs"][key])
+    
+    # for node in workflow.values():
+    #     if "inputs" in node:
+    #         for key in node["inputs"]:
+    #             if "seed" in key.lower():
+    #                 node["inputs"][key] = random.randint(0, 2**32 - 1)
+    #                 logger.info(f"set seed to: ", node["inputs"][key])
     return workflow
 
 
@@ -711,32 +710,60 @@ def upload_completed_jobs(
         if generation_type in ("image", "video"):
             display_image = create_display_image(job.output_path, generation_type)
 
-        # Upload main file using API endpoint
-        with open(job.output_path, 'rb') as f:
-            files = {'file': (filename, f, f'application/{extension}')}
-            response = requests.post(
-                f"{api_url}/v1/upload/{job.job['movie_id']}",
-                files=files,
-                params={'prefix': s3_prefix}
+        # --- always use presigned S3 PUT (no CloudFront size limits) ---
+        mime_type, _ = mimetypes.guess_type(filename)
+        if not mime_type:
+            mime_type = f"application/{extension}"
+
+        rsp = requests.get(
+            f"{api_url}/v1/upload/presign",
+            params={
+                "movie_id": job.job["movie_id"],
+                "filename": filename,
+                "prefix":  s3_prefix,
+                "content_type": mime_type,
+            },
+        )
+        presign = rsp.json()
+
+        with open(job.output_path, "rb") as fh:
+            put = requests.put(
+                presign["url"],
+                data=fh,
+                headers={"Content-Type": mime_type},
             )
-            if response.status_code != 200:
-                logger.info(f"Failed to upload file: {response.text}")
-                continue
-            result = response.json()
-            s3_path = result['url']
+        if put.status_code not in (200, 204):
+            logger.info(f"Failed presigned upload: {put.text}")
+            continue
+
+        s3_path = presign["public"]
 
         # Upload display image if exists
         if display_image and os.path.exists(display_image):
-            display_image_filename = display_image.split("/")[-1]
-            with open(display_image, 'rb') as f:
-                files = {'file': (display_image_filename, f, 'image/webp')}
-                response = requests.post(
-                    f"{api_url}/v1/upload/{job.job['movie_id']}",
-                    files=files,
-                    params={'prefix': s3_prefix}
+            thumb_name = os.path.basename(display_image)
+            mime_type, _ = mimetypes.guess_type(thumb_name)
+            if not mime_type:
+                mime_type = "image/webp"
+
+            rsp = requests.get(
+                f"{api_url}/v1/upload/presign",
+                params={
+                    "movie_id": job.job["movie_id"],
+                    "filename": thumb_name,
+                    "prefix": s3_prefix,
+                    "content_type": mime_type,
+                },
+            )
+            presign_thumb = rsp.json()
+
+            with open(display_image, "rb") as fh:
+                requests.put(
+                    presign_thumb["url"],
+                    data=fh,
+                    headers={"Content-Type": mime_type},
                 )
-                if response.status_code == 200:
-                    display_image_s3_path = response.json()['url']
+
+            display_image_s3_path = presign_thumb["public"]
 
         inference_output = {
             "type": generation_type,

@@ -113,7 +113,7 @@ class OboboWorkerManager {
         if (this.hasWorkerProcess) {
             const workerInfo = Object.values(this.workers)[0];
             if (workerInfo && workerInfo.worker_id) {
-                const url = `http://localhost:5173/start_worker/${workerInfo.worker_id}`;
+                const url = `https://obobo.net/start_worker/${workerInfo.worker_id}`;
                 window.open(url, '_blank');
                 console.log("🎬 Opening claim worker URL:", url);
                 
@@ -160,7 +160,7 @@ class OboboWorkerManager {
                     "Content-Type": "application/json",
                 },
                 body: JSON.stringify({
-                    api_url: "http://127.0.0.1:8001", //"https://inference.obobo.net"
+                    api_url: "https://inference.obobo.net", //"http://127.0.0.1:8001"
                     private: true  // Set worker as private
                 })
             });

@@ -41,7 +41,7 @@ async def start_worker(request: Request) -> web.Response:
     """Start the worker process"""
     try:
         data = await request.json()
-        api_url = data.get("api_url", "http://127.0.0.1:8001")
+        api_url = data.get("api_url", "https://inference.obobo.net")
         
         # Use worker manager to start the worker
         wm = get_worker_manager(api_url)
@@ -254,7 +254,7 @@ async def save_workflow(request: Request) -> web.Response:
         import aiohttp
         import json
         
-        api_url = wm.api_url or "http://127.0.0.1:8001"
+        api_url = wm.api_url or "https://inference.obobo.net"
         save_url = f"{api_url}/v1/upload/save-workflow"
         
         async with aiohttp.ClientSession() as session:
