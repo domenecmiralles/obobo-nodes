@@ -4,3 +4,4 @@ __pycache__/
 tmp/
 logs/
 nonapi/
+with_private_worker_safecopy/

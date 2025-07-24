@@ -3,22 +3,21 @@ import re
 import json
 import copy
 import requests
-from bson import ObjectId
 from pydantic import BaseModel
-from typing import Optional, Union, Dict, Any, List
+from typing import Optional
 import random
 from PIL import Image
 import cv2
 from dotenv import load_dotenv
 import logging
-import mimetypes
 
 logger = logging.getLogger(__name__)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# Remove the global basicConfig call - this should be done in the main application
+# logging.basicConfig(
+#     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+# )
+
 load_dotenv()
 
 # Path to ComfyUI root directory (3 levels up from worker/utils/)
@@ -77,7 +76,7 @@ def download_file(url, folder, debug=False):
                 f.write(chunk)
         return file_path
     else:
-        logger.info(f"Failed to download {url}")
+        logger.error(f"Failed to download {url} - status code: {response.status_code}")
         return None
 
 
@@ -94,25 +93,24 @@ def queue_prompt(workflow_json, client_id, server):
 def handle_generation_error(error_message, job_id, api_url, server=None):
 
     # Update the job status in the database
-    logger.info(f"Updating job {job_id} status to 'failed' with error message: {error_message}")
+    logger.error(f"Updating job {job_id} status to 'failed' with error message: {error_message}")
     response = requests.post(
         f"{api_url}/v1/inference/update_generation_status_to_failed/{str(job_id)}", 
         json={"error_message": error_message}
     )
     # TODO: is this appropiate?
     if "allocation on device" in error_message.lower() and server:
-        logger.info(f"Unloading models and emptying memory")
+        logger.warning(f"Unloading models and emptying memory due to device allocation error")
         unload_models_and_empty_memory(server)
 
 
 def set_random_seed_in_workflow(workflow):
-    
-    # for node in workflow.values():
-    #     if "inputs" in node:
-    #         for key in node["inputs"]:
-    #             if "seed" in key.lower():
-    #                 node["inputs"][key] = random.randint(0, 2**32 - 1)
-    #                 logger.info(f"set seed to: ", node["inputs"][key])
+    for node in workflow.values():
+        if "inputs" in node:
+            for key in node["inputs"]:
+                if "seed" in key.lower():
+                    node["inputs"][key] = random.randint(0, 2**32 - 1)
+                    logger.debug(f"set seed to: {node['inputs'][key]}")
     return workflow
 
 
@@ -120,55 +118,55 @@ def process_lora_array(loras_array, node):
     """Process an array of LoRAs and add them to the node inputs.
     Currently, we only use the first LoRA in the array.
     """
-    logger.info(f"DEBUG: Processing LoRAs array: {json.dumps(loras_array, indent=2)}")
+    logger.debug(f"Processing LoRAs array: {json.dumps(loras_array, indent=2)}")
 
     if not loras_array or len(loras_array) == 0:
-        logger.info(f"DEBUG: No LoRAs to process")
+        logger.debug(f"No LoRAs to process")
         return
 
     # For now, we only support the first LoRA
     lora_data = loras_array[0]
 
     if "type" not in lora_data or lora_data["type"] != "lora":
-        logger.info(f"WARNING: Expected lora type, got: {lora_data.get('type')}")
+        logger.warning(f"Expected lora type, got: {lora_data.get('type')}")
         return
 
     lora_value = lora_data.get("value", {})
     if not isinstance(lora_value, dict):
-        logger.info(f"ERROR: Expected lora value to be a dict, got: {type(lora_value)}")
+        logger.error(f"Expected lora value to be a dict, got: {type(lora_value)}")
         return
 
     # Handle nested value structure if present
     if "value" in lora_value and isinstance(lora_value["value"], dict):
         lora_value = lora_value["value"]
-        print(
-            f"DEBUG: Using nested value structure: {json.dumps(lora_value, indent=2)}"
+        logger.debug(
+            f"Using nested value structure: {json.dumps(lora_value, indent=2)}"
         )
 
     # Get URL and strength
     if "url" not in lora_value:
-        print(
-            f"ERROR: LoRA value missing 'url' field: {json.dumps(lora_value, indent=2)}"
+        logger.error(
+            f"LoRA value missing 'url' field: {json.dumps(lora_value, indent=2)}"
         )
         return
 
     lora_url = lora_value["url"]
     lora_strength = lora_value.get("strength", 1.0)
 
-    logger.info(f"DEBUG: LoRA URL: {lora_url}, strength: {lora_strength}")
+    logger.debug(f"LoRA URL: {lora_url}, strength: {lora_strength}")
 
     # Download the LoRA file
     filepath = download_file(lora_url, f"{COMFYUI_PATH}/models/loras/obobo")
     if not filepath:
-        logger.info(f"ERROR: Failed to download LoRA from {lora_url}")
+        logger.error(f"Failed to download LoRA from {lora_url}")
         return
 
-    logger.info(f"DEBUG: Downloaded LoRA to: {filepath}")
+    logger.debug(f"Downloaded LoRA to: {filepath}")
 
     # Set the LoRA path and strength in the node inputs
     lora_filename = os.path.basename(filepath)
     lora_path = f"obobo/{lora_filename}"
-    logger.info(f"DEBUG: Setting lora_path to: {lora_path}")
+    logger.debug(f"Setting lora_path to: {lora_path}")
 
     node["inputs"]["lora_path"] = lora_path
     node["inputs"]["lora_strength"] = lora_strength
@@ -225,13 +223,13 @@ def fill_workflow_obobo_inputs(
             node["inputs"]["file_path"] = output_file_path
         if "OboboInput" in node["class_type"]:
             input_name = node["inputs"]["name"]
-            logger.info(f"DEBUG: Processing OboboInput node with name '{input_name}'")
+            logger.debug(f"Processing OboboInput node with name '{input_name}'")
 
             # Special handling for LoRAs which is an array
             if node["class_type"] == "OboboInputLora" and input_name in workflow_inputs:
                 # set strength to 0.0 in case there are no loras
                 node["inputs"]["lora_strength"] = 0.0
-                logger.info(f"DEBUG: Found LoRAs input")
+                logger.debug(f"Found LoRAs input")
                 lora_loader = get_node_connected_to_node_n(workflow, key)
                 first_lora = True
                 last_lora_node_n = lora_loader["n"]
@@ -265,7 +263,7 @@ def fill_workflow_obobo_inputs(
                                 ][node_position_to_input_name[input_value[1]]]
 
                     if not first_lora:
-                        print(last_lora_node_n)
+                        logger.info(f"last_lora_node_n: {last_lora_node_n}")
                         current_lora_node_n = get_next_node_n(
                             {**workflow, **lora_nodes}
                         )
@@ -294,11 +292,11 @@ def fill_workflow_obobo_inputs(
 
             # Check if this input exists in workflow_inputs
             if input_name not in workflow_inputs:
-                logger.info(f"Missing input: {input_name}")
+                logger.warning(f"Missing input: {input_name}")
                 continue
 
             input_data = workflow_inputs[input_name]
-            print(
+            logger.info(
                 f"DEBUG: Input data for '{input_name}':",
                 json.dumps(input_data, indent=2),
             )
@@ -309,48 +307,48 @@ def fill_workflow_obobo_inputs(
                 # TODO: workaround cutre per characters que per alguna rao venen com a dict name url
                 if isinstance(input_value, dict) and "value" in input_value:
                     input_value = input_value["value"]
-                print(
+                logger.info(
                     f"DEBUG: Input type: {input_type}, Value type: {type(input_value)}"
                 )
 
                 if input_type == "text":
                     node["inputs"]["text"] = input_value
-                    logger.info(f"DEBUG: Set text input to: {input_value}")
+                    logger.debug(f"Set text input to: {input_value}")
                 elif input_type == "number":
                     node["inputs"]["number"] = input_value
-                    logger.info(f"DEBUG: Set number input to: {input_value}")
+                    logger.debug(f"Set number input to: {input_value}")
                 elif input_type == "vector2":
-                    print(
-                        f"DEBUG: Vector2 value: {input_value}, type: {type(input_value)}"
+                    logger.debug(
+                        f"Vector2 value: {input_value}, type: {type(input_value)}"
                     )
                     if isinstance(input_value, list) and len(input_value) >= 2:
                         node["inputs"]["x"] = input_value[0]
                         node["inputs"]["y"] = input_value[1]
-                        print(
-                            f"DEBUG: Set vector2 input to x={input_value[0]}, y={input_value[1]}"
+                        logger.debug(
+                            f"Set vector2 input to x={input_value[0]}, y={input_value[1]}"
                         )
                     else:
-                        print(
-                            f"WARNING: Expected vector2 value to be a list with at least 2 elements, got: {input_value}"
+                        logger.warning(
+                            f"Expected vector2 value to be a list with at least 2 elements, got: {input_value}"
                         )
                 elif input_type == "audio":
-                    print(
-                        f"DEBUG: Value type: {type(input_value)}, value: {input_value}"
+                    logger.debug(
+                        f"Value type: {type(input_value)}, value: {input_value}"
                     )
                     if isinstance(input_value, str):
                         audio_path = download_file(
                             input_value, f"{COMFYUI_PATH}/input/obobo/audios"
                         )
-                        logger.info(f"DEBUG: Downloaded audio to: {audio_path}")
+                        logger.debug(f"Downloaded audio to: {audio_path}")
                         if audio_path:
                             audio_path = os.path.abspath(audio_path)
                             node["inputs"]["audio_path"] = audio_path
-                            logger.info(f"DEBUG: Set audio_path to: {audio_path}")
+                            logger.debug(f"Set audio_path to: {audio_path}")
                         else:
-                            logger.info(f"ERROR: Failed to download audio from {input_value}")
+                            logger.error(f"Failed to download audio from {input_value}")
                     else:
-                        print(
-                            f"ERROR: Expected audio value to be a string URL, got: {type(input_value)}"
+                        logger.error(
+                            f"Expected audio value to be a string URL, got: {type(input_value)}"
                         )
                 elif input_type == "image":
                     if isinstance(input_value, str):
@@ -360,10 +358,10 @@ def fill_workflow_obobo_inputs(
                         if filepath:
                             # Make path absolute
                             filepath = os.path.abspath(filepath)
-                            logger.info(f"DEBUG: image filepath: {filepath}")
+                            logger.debug(f"image filepath: {filepath}")
                             node["inputs"]["image_path"] = filepath
                         else:
-                            logger.info(f"ERROR: Failed to download image from {input_value}")
+                            logger.error(f"Failed to download image from {input_value}")
                     elif (
                         isinstance(input_value, dict)
                         and "value" in input_value
@@ -375,15 +373,15 @@ def fill_workflow_obobo_inputs(
                         if filepath:
                             # Make path absolute
                             filepath = os.path.abspath(filepath)
-                            logger.info(f"DEBUG: image filepath: {filepath}")
+                            logger.debug(f"image filepath: {filepath}")
                             node["inputs"]["image_path"] = filepath
                         else:
-                            print(
-                                f"ERROR: Failed to download image from {input_value['value']}"
+                            logger.error(
+                                f"Failed to download image from {input_value['value']}"
                             )
                     else:
-                        print(
-                            f"ERROR: Expected image value to be a string URL, got: {type(input_value)}"
+                        logger.error(
+                            f"Expected image value to be a string URL, got: {type(input_value)}"
                         )
                 elif input_type == "video":
                     if isinstance(input_value, str):
@@ -393,28 +391,28 @@ def fill_workflow_obobo_inputs(
                         if video_path:
                             video_path = os.path.abspath(video_path)
                             node["inputs"]["video_path"] = video_path
-                            logger.info(f"DEBUG: Set video_path to: {video_path}")
+                            logger.debug(f"Set video_path to: {video_path}")
                         else:
-                            logger.info(f"ERROR: Failed to download video from {input_value}")
+                            logger.error(f"Failed to download video from {input_value}")
                     else:
-                        print(
-                            f"ERROR: Expected video value to be a string URL, got: {type(input_value)}"
+                        logger.error(
+                            f"Expected video value to be a string URL, got: {type(input_value)}"
                         )
             except KeyError as e:
-                logger.info(f"ERROR: Missing key in input_data: {e}")
-                print(
-                    f"ERROR: input_data structure: {json.dumps(input_data, indent=2)}"
+                logger.error(f"Missing key in input_data: {e}")
+                logger.error(
+                    f"input_data structure: {json.dumps(input_data, indent=2)}"
                 )
             except Exception as e:
-                logger.info(f"ERROR: Failed to process input '{input_name}': {str(e)}")
-                logger.info(f"ERROR: input_data: {json.dumps(input_data, indent=2)}")
+                logger.error(f"Failed to process input '{input_name}': {str(e)}")
+                logger.error(f"input_data: {json.dumps(input_data, indent=2)}")
     # add the new nodes to the workflow
     for n, node in lora_nodes.items():
         workflow[n] = node
     # logger.info(f"DEBUG: lora_nodes: {json.dumps(lora_nodes, indent=2)}")
     # Set random seed for any node with a 'seed' input
     workflow = set_random_seed_in_workflow(workflow)
-    logger.info(f"DEBUG: Saved modified workflow to {download_workflow_path}")
+    logger.debug(f"Saved modified workflow to {download_workflow_path}")
     if download_workflow_path:
         # Save the modified workflow to a file
         with open(download_workflow_path, "w") as f:
@@ -440,7 +438,7 @@ def queue_claimed_jobs(
 
     for job in claimed_jobs:
         try:
-            logger.info(f"DEBUG: Processing job {job['_id']}")
+            logger.debug(f"Processing job {job['_id']}")
             
             # try to find workflow[api_link] first and fallback to link
             workflow_url = job["workflow"].get("api_link") or job["workflow"].get("link")
@@ -448,7 +446,7 @@ def queue_claimed_jobs(
                 raise Exception(f"No workflow URL found for job {job['_id']}")
             
             workflow_file = download_file(workflow_url, "tmp/workflows")
-            logger.info(f"DEBUG: Downloaded workflow to: {workflow_file}")
+            logger.debug(f"Downloaded workflow to: {workflow_file}")
 
             with open(workflow_file, "rb") as f:
                 workflow = json.load(f)
@@ -456,7 +454,7 @@ def queue_claimed_jobs(
 
             # get inputs - use the new structure
             workflow_inputs = job["workflow_inputs"]
-            logger.info(f"DEBUG: workflow_inputs keys: {list(workflow_inputs.keys())}")
+            logger.debug(f"workflow_inputs keys: {list(workflow_inputs.keys())}")
 
             # fill workflow with inputs
             workflow = fill_workflow_obobo_inputs(
@@ -470,7 +468,7 @@ def queue_claimed_jobs(
                 raise Exception(workflow)
 
             # queue workflow
-            logger.info(f"DEBUG: Queueing workflow to ComfyUI")
+            logger.debug(f"Queueing workflow to ComfyUI")
             response = queue_prompt(
                 workflow,
                 client_id=str(job["_id"]),
@@ -478,14 +476,14 @@ def queue_claimed_jobs(
             )
 
             if "error" in response:
-                logger.info(f"DEBUG: ComfyUI returned error: {response['error']}")
+                logger.error(f"ComfyUI returned error: {response['error']}")
                 handle_generation_error(
                     response["error"]["message"], job["_id"], api_url, server
                 )
                 continue
 
             # create QueuedJob
-            logger.info(f"DEBUG: Created QueuedJob with prompt_id: {response['prompt_id']}")
+            logger.debug(f"Created QueuedJob with prompt_id: {response['prompt_id']}")
             queued_jobs.append(
                 QueuedJob(
                     job=job,
@@ -494,7 +492,7 @@ def queue_claimed_jobs(
                 )
             )
         except Exception as e:
-            logger.info(f"DEBUG: Exception in queue_claimed_jobs: {str(e)}")
+            logger.error(f"Exception in queue_claimed_jobs: {str(e)}")
             handle_generation_error(str(e), job["_id"], api_url, server)
             # remove from claimed_jobs
             # claimed_jobs.remove(job)
@@ -529,7 +527,7 @@ def update_status_to_running(queued_job, api_url,server):
                 queued_job.comfyui_status = "running"
                 requests.post(f"{api_url}/v1/inference/update_generation_status_to_running/{str(queued_job.job['_id'])}")
     except Exception as e:
-        logger.info(f"DEBUG: Error updating status to running for job {queued_job.job['_id']}: {e}")
+        logger.error(f"Error updating status to running for job {queued_job.job['_id']}: {e}")
         return False
 
 
@@ -552,7 +550,7 @@ def check_completed_jobs_and_get_outputs(
         if not job_history["status"]["completed"]:
             # logger.info(f"Job {job.prompt_id} is not completed yet.")
             if job_history["status"]["status_str"] == "error":
-                logger.info(f"Job {job.prompt_id} has error status.")
+                logger.error(f"Job {job.prompt_id} has error status.")
                 error_message = ""
                 for k, v in job_history["status"].items():
                     if k == "messages":
@@ -578,7 +576,7 @@ def check_completed_jobs_and_get_outputs(
 
         if not output_local_filenames:
             logger.info(f"Job {job.prompt_id} has no output filename.")
-            print(
+            logger.info(
                 f"Output folder: {output_local_folder}. Contents: {os.listdir(output_local_folder)}. Job ID: {job.job['_id']}"
             )
             handle_generation_error(
@@ -627,7 +625,7 @@ def check_completed_jobs_and_get_outputs(
         job.job["inference"]["execution_time_in_seconds"] = (
             get_execution_time_from_history(job_history)
         )
-        print(
+        logger.info(
             f"Job {job.prompt_id} with job id {str(job.job['_id'])} has output filename: {output_local_filename}"
         )
     return queued_jobs
@@ -673,8 +671,8 @@ def upload_completed_jobs(
     queued_jobs,
     api_url,
     s3_prefix,
-    # s3_client,
-    # s3_bucket="obobo-media-production",
+    s3_client,
+    s3_bucket="obobo-media-production",
 ):
     extensions = {
         "image": ["png", "jpg", "jpeg"],
@@ -686,7 +684,7 @@ def upload_completed_jobs(
         if not job.completed or not job.output_path:
             continue
 
-        logger.info(f"DEBUG: Uploading completed job {job.job['_id']}: {job.output_path}")
+        logger.debug(f"Uploading completed job {job.job['_id']}: {job.output_path}")
             
         # Initialize inference dictionary if it doesn't exist
         if "inference" not in job.job or job.job["inference"] is None:
@@ -701,7 +699,7 @@ def upload_completed_jobs(
                 generation_type = extension_type
                 break
         if not extension_type:
-            logger.info(f"Unknown file type: {extension}")
+            logger.warning(f"Unknown file type: {extension}")
             continue
 
         display_image = ""
@@ -709,61 +707,24 @@ def upload_completed_jobs(
         # Use new create_display_image function for image/video
         if generation_type in ("image", "video"):
             display_image = create_display_image(job.output_path, generation_type)
-
-        # --- always use presigned S3 PUT (no CloudFront size limits) ---
-        mime_type, _ = mimetypes.guess_type(filename)
-        if not mime_type:
-            mime_type = f"application/{extension}"
-
-        rsp = requests.get(
-            f"{api_url}/v1/upload/presign",
-            params={
-                "movie_id": job.job["movie_id"],
-                "filename": filename,
-                "prefix":  s3_prefix,
-                "content_type": mime_type,
-            },
-        )
-        presign = rsp.json()
-
-        with open(job.output_path, "rb") as fh:
-            put = requests.put(
-                presign["url"],
-                data=fh,
-                headers={"Content-Type": mime_type},
-            )
-        if put.status_code not in (200, 204):
-            logger.info(f"Failed presigned upload: {put.text}")
-            continue
-
-        s3_path = presign["public"]
-
-        # Upload display image if exists
-        if display_image and os.path.exists(display_image):
-            thumb_name = os.path.basename(display_image)
-            mime_type, _ = mimetypes.guess_type(thumb_name)
-            if not mime_type:
-                mime_type = "image/webp"
-
-            rsp = requests.get(
-                f"{api_url}/v1/upload/presign",
-                params={
-                    "movie_id": job.job["movie_id"],
-                    "filename": thumb_name,
-                    "prefix": s3_prefix,
-                    "content_type": mime_type,
-                },
-            )
-            presign_thumb = rsp.json()
-
-            with open(display_image, "rb") as fh:
-                requests.put(
-                    presign_thumb["url"],
-                    data=fh,
-                    headers={"Content-Type": mime_type},
+            if display_image and os.path.exists(display_image):
+                display_image_filename = display_image.split("/")[-1]
+                s3_client.upload_file(
+                    display_image,
+                    s3_bucket,
+                    f"{s3_prefix}/{job.job['movie_id']}/{display_image_filename}",
                 )
+                display_image_s3_path = f"https://media.obobo.net/{s3_prefix}/{job.job['movie_id']}/{display_image_filename}"
+        # For audio/text, display_image remains empty
 
-            display_image_s3_path = presign_thumb["public"]
+        s3_client.upload_file(
+            job.output_path,
+            s3_bucket,
+            f"{s3_prefix}/{job.job['movie_id']}/{filename}",
+        )
+        s3_path = (
+            f"https://media.obobo.net/{s3_prefix}/{job.job['movie_id']}/{filename}"
+        )
 
         inference_output = {
             "type": generation_type,
@@ -776,10 +737,7 @@ def upload_completed_jobs(
         )
 
         # update the job in the database with the output
-        requests.post(
-            f"{api_url}/v1/inference/update_generation_status_to_success/{str(job.job['_id'])}",
-            json={"output": inference_output, "inference": job.job["inference"]}
-        )
+        requests.post(f"{api_url}/v1/inference/update_generation_status_to_success/{str(job.job['_id'])}", json={"output": inference_output, "inference": job.job["inference"]})
 
         # pop from queued_jobs list
         queued_jobs.remove(job)
@@ -791,3 +749,127 @@ def upload_completed_jobs(
 
 def unload_models_and_empty_memory(server: str):
     requests.post(f"{server}/free", json={"unload_models": True, "free_memory": True})
+
+
+# def upload_completed_jobs(
+#     queued_jobs,
+#     api_url,
+#     s3_prefix,
+#     # s3_client,
+#     # s3_bucket="obobo-media-production",
+# ):
+#     extensions = {
+#         "image": ["png", "jpg", "jpeg"],
+#         "video": ["mp4", "webp", "mov", "avi", "mkv", "webm", "gif"],
+#         "audio": ["mp3", "wav", "flac", "aac", "ogg"],
+#         "text": ["txt", "json", "csv"],
+#     }
+#     for job in queued_jobs:
+#         if not job.completed or not job.output_path:
+#             continue
+
+#         logger.info(f"DEBUG: Uploading completed job {job.job['_id']}: {job.output_path}")
+            
+#         # Initialize inference dictionary if it doesn't exist
+#         if "inference" not in job.job or job.job["inference"] is None:
+#             job.job["inference"] = {}
+            
+#         # make an if for every possible extension and upload to s3
+#         extension = job.output_path.split(".")[-1]
+#         filename = job.output_path.split("/")[-1]
+#         extension_type = None
+#         for extension_type in extensions.keys():
+#             if extension in extensions[extension_type]:
+#                 generation_type = extension_type
+#                 break
+#         if not extension_type:
+#             logger.info(f"Unknown file type: {extension}")
+#             continue
+
+#         display_image = ""
+#         display_image_s3_path = ""
+#         # Use new create_display_image function for image/video
+#         if generation_type in ("image", "video"):
+#             display_image = create_display_image(job.output_path, generation_type)
+
+#         # --- always use presigned S3 PUT (no CloudFront size limits) ---
+#         mime_type, _ = mimetypes.guess_type(filename)
+#         if not mime_type:
+#             mime_type = f"application/{extension}"
+
+#         rsp = requests.get(
+#             f"{api_url}/v1/upload/presign",
+#             params={
+#                 "movie_id": job.job["movie_id"],
+#                 "filename": filename,
+#                 "prefix":  s3_prefix,
+#                 "content_type": mime_type,
+#             },
+#         )
+#         presign = rsp.json()
+
+#         with open(job.output_path, "rb") as fh:
+#             put = requests.put(
+#                 presign["url"],
+#                 data=fh,
+#                 headers={"Content-Type": mime_type},
+#             )
+#         if put.status_code not in (200, 204):
+#             logger.info(f"Failed presigned upload: {put.text}")
+#             continue
+
+#         s3_path = presign["public"]
+
+#         # Upload display image if exists
+#         if display_image and os.path.exists(display_image):
+#             thumb_name = os.path.basename(display_image)
+#             mime_type, _ = mimetypes.guess_type(thumb_name)
+#             if not mime_type:
+#                 mime_type = "image/webp"
+
+#             rsp = requests.get(
+#                 f"{api_url}/v1/upload/presign",
+#                 params={
+#                     "movie_id": job.job["movie_id"],
+#                     "filename": thumb_name,
+#                     "prefix": s3_prefix,
+#                     "content_type": mime_type,
+#                 },
+#             )
+#             presign_thumb = rsp.json()
+
+#             with open(display_image, "rb") as fh:
+#                 requests.put(
+#                     presign_thumb["url"],
+#                     data=fh,
+#                     headers={"Content-Type": mime_type},
+#                 )
+
+#             display_image_s3_path = presign_thumb["public"]
+
+#         inference_output = {
+#             "type": generation_type,
+#             "url": s3_path,
+#             "display_image": display_image_s3_path,
+#         }
+#         # get the size of the file
+#         job.job["inference"]["output_size_in_gb"] = get_file_size_in_gigabytes(
+#             job.output_path
+#         )
+
+#         # update the job in the database with the output
+#         requests.post(
+#             f"{api_url}/v1/inference/update_generation_status_to_success/{str(job.job['_id'])}",
+#             json={"output": inference_output, "inference": job.job["inference"]}
+#         )
+
+#         # pop from queued_jobs list
+#         queued_jobs.remove(job)
+
+#         # remove local file
+#         # os.remove(job.output_path)
+#     return queued_jobs
+
+
+# def unload_models_and_empty_memory(server: str):
+#     requests.post(f"{server}/free", json={"unload_models": True, "free_memory": True})

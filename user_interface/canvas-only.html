@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ComfyUI - Canvas Only</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #1a1a1a;
+        }
+        
+        #comfyui-iframe {
+            width: 100vw;
+            height: 100vh;
+            border: none;
+        }
+        
+        /* Hide everything except graph canvas when iframe loads */
+        .canvas-only-mode .comfy-menu,
+        .canvas-only-mode .comfy-settings-btn,
+        .canvas-only-mode .comfy-queue-btn,
+        .canvas-only-mode .comfy-history-btn,
+        .canvas-only-mode .comfy-view-queue-btn,
+        .canvas-only-mode .comfy-save-btn,
+        .canvas-only-mode .comfy-load-btn,
+        .canvas-only-mode .comfy-refresh-btn,
+        .canvas-only-mode .comfy-clipspace-btn,
+        .canvas-only-mode .comfy-clear-btn,
+        .canvas-only-mode .comfy-load-default-btn,
+        .canvas-only-mode .comfy-sidebar,
+        .canvas-only-mode #sidebar,
+        .canvas-only-mode .sidebar,
+        .canvas-only-mode header,
+        .canvas-only-mode .header,
+        .canvas-only-mode .top-menubar,
+        .canvas-only-mode .menu-container {
+            display: none !important;
+        }
+        
+        .canvas-only-mode #graph-canvas-container {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            z-index: 1000 !important;
+        }
+    </style>
+</head>
+<body>
+    <iframe id="comfyui-iframe" src="/?canvas_only=true"></iframe>
+    
+    <script>
+        // Optional: Add iframe communication if needed
+        const iframe = document.getElementById('comfyui-iframe');
+        
+        iframe.onload = function() {
+            try {
+                // Access iframe document (only works if same origin)
+                const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                if (iframeDoc) {
+                    iframeDoc.body.classList.add('canvas-only-mode');
+                }
+            } catch (e) {
+                console.log('Cannot access iframe content due to same-origin policy');
+            }
+        };
+        
+        // Listen for messages from the iframe
+        window.addEventListener('message', function(event) {
+            if (event.data.type === 'comfyui-loaded') {
+                console.log('ComfyUI loaded in iframe');
+            }
+        });
+    </script>
+</body>
+</html> 

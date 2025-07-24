@@ -27,7 +27,7 @@ from .nodes.obobo_conditional_bypass import OboboConditionalBypass
 
 # Import worker web extension
 try:
-    from .worker import web as worker_web
+    from .user_interface import web as worker_web
     logger.info("🎬 Obobo Worker web extension loaded successfully")
 except Exception as e:
     logger.error(f"🎬 Failed to load Obobo Worker web extension: {e}")
@@ -59,7 +59,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 }
 
 # Web extension mappings (required by ComfyUI for JavaScript extensions)
-WEB_DIRECTORY = "./worker/js"
+WEB_DIRECTORY = "./user_interface/js"
 
 # Register with ComfyUI
 __all__ = [
@@ -68,4 +68,4 @@ __all__ = [
     "WEB_DIRECTORY"
 ]
 
-logger.info("🎬 Obobo Worker Manager loaded successfully") 
+logger.info("🎬 Obobo Worker Manager loaded successfully")

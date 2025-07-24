@@ -7,14 +7,14 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 import requests
 from utils.device import get_gpu_info
+from utils.database import get_s3_client
 from utils.comfyui import queue_claimed_jobs, jobs_in_comfyui_queue, check_completed_jobs_and_get_outputs, upload_completed_jobs, unload_models_and_empty_memory
-
-# Path to ComfyUI root directory (3 levels up from worker/)
-COMFYUI_PATH = "../../.."
 
 # example usage for local develpopment
 # CUDA_VISIBLE_DEVICES=0 python worker/main.py --api-url http://localhost:8001 --comfyui_server http://127.0.0.1:8188 --worker_id test-worker --batch "{}"
 # CUDA_VISIBLE_DEVICES=0 python worker/main.py --api-url https://inference.obobo.net --comfyui_server http://127.0.0.1:8188 --worker_id test-worker --batch "{}"
+
+COMFYUI_PATH = "../../.."
 
 # Configure logging
 logging.basicConfig(
@@ -31,6 +31,7 @@ class Worker:
         self.gpus = get_gpu_info()
         self.batch = batch
         self.comfyui_server = comfyui_server
+        self.s3_client = get_s3_client()
         self.comfyui_output_path = f"{COMFYUI_PATH}/output"
         self.last_workflow_url = None
         self.batch_wait_time = 15
@@ -39,32 +40,22 @@ class Worker:
     def register(self) -> bool:
         """Register worker with the API"""
         try:
-            # Extract port from comfyui_server URL
+        
             import re
             port_match = re.search(r':(\d+)', self.comfyui_server)
             comfyui_port = int(port_match.group(1)) if port_match else 8188
             
-            # gives error 403 when deployed
-            registration_data = {
-                "gpus": [g.model_dump() for g in self.gpus],
-                "private": True,
-                "port": comfyui_port,
-                "comfyui_server": self.comfyui_server,
-                "created_at": datetime.now().isoformat(),  # Add timestamp
-                "updated_at": datetime.now().isoformat()   # Add timestamp
-            }
             
-            # response = requests.post(
-            #     f"{self.api_url}/v1/worker/register/{self.worker_id}",
-            #     json=registration_data,
-            # )
             response = requests.post(
                 f"{self.api_url}/v1/worker/register/{self.worker_id}",
-                json={"gpus": [g.model_dump() for g in self.gpus]},
+                json={
+                    "gpus": [g.model_dump() for g in self.gpus],
+                    "port_address": str(comfyui_port)
+                    },
             )
             response.raise_for_status()
             self.registered = True
-            logger.info(f"Successfully registered worker {self.worker_id} with ComfyUI on {self.comfyui_server}")
+            logger.info(f"Successfully registered worker {self.worker_id}")
             return True
         except Exception as e:
             logger.error(f"Failed to register worker: {e}")
@@ -72,16 +63,6 @@ class Worker:
 
     def send_heartbeat(self) -> bool:
         return True
-        # """Send heartbeat to API"""
-        # try:
-        #     response = requests.post(
-        #         f"{self.api_url}/v1/worker/heartbeat/{self.worker_id}"
-        #     )
-        #     response.raise_for_status()
-        #     return True
-        # except Exception as e:
-        #     logger.error(f"Failed to send heartbeat: {e}")
-        #     return False
 
     def unregister(self) -> bool:
         """Unregister worker from API"""
@@ -139,8 +120,8 @@ class Worker:
                     queued_jobs,
                     self.api_url,
                     "movies",
-                    # self.s3_client,
-                    # "obobo-media-production",
+                    self.s3_client,
+                    "obobo-media-production",
                 )
                 if len(queued_jobs) == 0:
                     break
@@ -170,7 +151,7 @@ class Worker:
     async def run_single_batch(self):
         """Process a single specified batch and exit"""
         if not self.batch:
-            logger.error("No batch ID provided for single batch mode")
+            logger.error(f"No batch ID provided for single batch mode")
             return
 
         try:
@@ -188,14 +169,14 @@ class Worker:
         while True:
             try:
                 if not self.registered and not self.register():
-                    logger.error("Failed to register worker, retrying in 10 seconds...")
+                    logger.error(f"Failed to register worker, retrying in 10 seconds...")
                     await asyncio.sleep(10)
                     continue
 
                 # Send heartbeat
                 if not self.send_heartbeat():
                     logger.error(
-                        "Failed to send heartbeat, attempting to re-register..."
+                        f"Failed to send heartbeat, attempting to re-register..."
                     )
                     self.registered = False
                     continue
@@ -207,7 +188,7 @@ class Worker:
                     logger.info(f"Processing batch with {len(batch['generations'])} generations")
                     await self.process_batch(batch) 
                 else:
-                    #logger.info(f"No batches available, waiting {self.batch_wait_time} seconds...")
+                    logger.info(f"No batches available, waiting {self.batch_wait_time} seconds...")
                     await asyncio.sleep(self.batch_wait_time)
 
             except Exception as e:
@@ -223,7 +204,7 @@ class Worker:
             else:
                 await self.run_continuous()
         except KeyboardInterrupt:
-            logger.info("Received shutdown signal")
+            logger.info(f"Received shutdown signal")
         finally:
             if self.registered:
                 self.unregister()
@@ -234,7 +215,7 @@ def main():
     parser.add_argument(
         "--api-url",
         required=False,
-        default="https://inference.obobo.net", #"http://127.0.0.1:8001",
+        default="inference.obobo.net",
         help="URL of the inference API",
     )
     parser.add_argument("--worker_id", required=True, help="Unique worker ID")
@@ -260,7 +241,7 @@ def main():
         asyncio.run(worker.run())
     except KeyboardInterrupt:
         worker.unregister()
-        logger.info("Worker shutdown complete")
+        logger.info(f"Worker shutdown complete")
 
 
 if __name__ == "__main__":
