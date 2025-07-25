@@ -1,6 +1,9 @@
 import GPUtil
-from oboboready.data.models import GPU
+from pydantic import BaseModel
 
+class GPU(BaseModel):
+    name: str
+    capacity_in_gb: float
 
 def get_gpu_info():
     gpus = GPUtil.getGPUs()

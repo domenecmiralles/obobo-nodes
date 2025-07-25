@@ -99,7 +99,7 @@ def handle_generation_error(error_message, job_id, api_url, server=None):
         json={"error_message": error_message}
     )
     # TODO: is this appropiate?
-    if "allocation on device" in error_message.lower() and server:
+    if "allocation on device" or "Allocation on device" in error_message.lower() and server:
         logger.warning("Unloading models and emptying memory due to device allocation error")
         unload_models_and_empty_memory(server)
 

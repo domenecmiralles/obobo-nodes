@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Constants and arrays
-GPUS=(5 6 7)  # Modify this array to set available GPUs
+GPUS=(0)  # Modify this array to set available GPUs
 NUM_GPUS=${#GPUS[@]}
 PIDS=()
 API_URL="http://inference.obobo.net"
@@ -31,8 +31,8 @@ cleanup() {
     
     # Also kill any ComfyUI, worker, and ngrok processes that might still be running
     echo "Cleaning up any remaining ComfyUI, worker, and ngrok processes..."
-    pkill -f "python main.py --port" 2>/dev/null || true
-    pkill -f "python main.py --api-url" 2>/dev/null || true
+    pkill -f "python3 main.py --port" 2>/dev/null || true
+    pkill -f "python3 main.py --api-url" 2>/dev/null || true
     pkill -f "ngrok" 2>/dev/null || true
     
     echo "Cleanup completed."
@@ -51,8 +51,11 @@ fi
 BASE_WORKER_ID=$1
 
 # Activate the conda environment
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate oboboenv
+# source ~/miniconda3/etc/profile.d/conda.sh
+# conda activate oboboenv
+
+#activate the venv:
+source ../../../venv/bin/activate
 
 echo "Will create ${NUM_GPUS} workers for GPUs: ${GPUS[*]}"
 echo "First worker will check for tunnel creation"
@@ -60,12 +63,12 @@ echo "First worker will check for tunnel creation"
 # Loop through the list of GPUs
 for ((i=0; i<NUM_GPUS; i++)); do
     GPU_ID=${GPUS[$i]}
-    COMFYUI_PORT=$((8000 + GPU_ID))
+    COMFYUI_PORT=$((8100 + GPU_ID))
     WORKER_ID="${BASE_WORKER_ID}_${GPU_ID}"
     
     # Start ComfyUI
     cd ../../../
-    CUDA_VISIBLE_DEVICES=$GPU_ID python main.py --port $COMFYUI_PORT --lowvram --dont-upcast-attention &
+    CUDA_VISIBLE_DEVICES=$GPU_ID python3 main.py --port $COMFYUI_PORT --lowvram --dont-upcast-attention &
     COMFYUI_PID=$!
     cd - > /dev/null
     PIDS+=($COMFYUI_PID)
@@ -78,7 +81,7 @@ for ((i=0; i<NUM_GPUS; i++)); do
     fi
     
     # Start the worker
-    CUDA_VISIBLE_DEVICES=$GPU_ID python main.py \
+    CUDA_VISIBLE_DEVICES=$GPU_ID python3 main.py \
         --api-url $API_URL \
         --comfyui_server "http://127.0.0.1:$COMFYUI_PORT" \
         --worker_id $WORKER_ID \
