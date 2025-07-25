@@ -39,6 +39,15 @@ class OboboWorkerManager {
 
     async saveWorkflow() {
         try {
+            // Get workflow context from URL parameters
+            const urlParams = new URLSearchParams(window.location.search);
+            const workflowNodeId = urlParams.get('workflow_node_id');
+            const movieId = urlParams.get('movie_id');
+            
+            if (!workflowNodeId || !movieId) {
+                throw new Error("Missing workflow context. This ComfyUI instance wasn't opened from a workflow node.");
+            }
+            
             // Get the current ComfyUI graph
             const workflow = app.graph.serialize();
             
@@ -68,7 +77,9 @@ class OboboWorkerManager {
                     workflow: {
                         nonapi: workflow,
                         api: apiWorkflow
-                    }
+                    },
+                    workflow_node_id: workflowNodeId,
+                    movie_id: movieId
                 })
             });
             

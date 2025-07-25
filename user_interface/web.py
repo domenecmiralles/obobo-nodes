@@ -1,60 +1,31 @@
 
 import os
+import json
+import tempfile
+import boto3
 from typing import Optional
 from aiohttp import web
 from aiohttp.web_request import Request
+import dotenv
 
+dotenv.load_dotenv()
 
-class WorkerManager:
-    def __init__(self, api_url: Optional[str] = None):
-        self.api_url = api_url
-        
-wm = WorkerManager()
         
 def routes():
-    """Define the web routes for the worker manager"""
+    """Define the web routes for the ComfyUI extension"""
     return [
-        web.get("/obobo/current_workflow", get_current_workflow),
-        web.post("/obobo/save_workflow", save_workflow),
+        web.post("/api/obobo/save_workflow", save_workflow),
     ]
 
-async def get_current_workflow(request: Request) -> web.Response:
-    """Get the current workflow URL for the worker"""
-    try:
-        result = wm.get_worker_status()
-        
-        if result["success"] and result["workers"]:
-            worker_info = next(iter(result["workers"].values()))
-            editable_workflow = worker_info.get("editable_workflow", {})
-            workflow_url = editable_workflow.get("link") if editable_workflow else None
-            
-            if workflow_url:
-                return web.json_response({
-                    "success": True,
-                    "workflow_url": workflow_url
-                })
-            else:
-                return web.json_response({
-                    "success": False,
-                    "message": "No workflow currently assigned"
-                }, status=404)
-        else:
-            return web.json_response({
-                "success": False,
-                "message": "No active worker found"
-            }, status=404)
-            
-    except Exception as e:
-        return web.json_response({
-            "success": False,
-            "message": str(e)
-        }, status=500)
+# Legacy endpoint removed - workflow context now passed via URL parameters
 
 async def save_workflow(request: Request) -> web.Response:
-    """Save workflow JSON to S3 through the API"""
+    """Save workflow JSONs directly to S3 and update workflow node"""
     try:
         data = await request.json()
         workflow_dict = data.get("workflow")
+        workflow_node_id = data.get("workflow_node_id")
+        movie_id = data.get("movie_id")
         
         if not workflow_dict or "nonapi" not in workflow_dict or "api" not in workflow_dict:
             return web.json_response({
@@ -62,52 +33,82 @@ async def save_workflow(request: Request) -> web.Response:
                 "message": "Invalid workflow format. Expected workflow: {nonapi: ..., api: ...}"
             }, status=400)
         
-        # Get worker status to find the workflow URL and node ID
-        result = wm.get_worker_status()
-        
-        if not result["success"] or not result["workers"]:
+        if not workflow_node_id or not movie_id:
             return web.json_response({
                 "success": False,
-                "message": "No active worker found"
-            }, status=404)
+                "message": "Missing required parameters: workflow_node_id and movie_id"
+            }, status=400)
         
-        worker_info = next(iter(result["workers"].values()))
-        workflow_node_id = worker_info.get("current_workflow_node_id")
-
+        # Initialize S3 client
+        s3_client = boto3.client('s3')
+        s3_bucket = "obobo-media-production"
+        s3_prefix = "workflows"
         
-        if not workflow_node_id:
-            return web.json_response({
-                "success": False,
-                "message": "Missing required worker information (workflow node ID)"
-            }, status=404)
+        # Create temporary files for both workflows
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as nonapi_file:
+            json.dump(workflow_dict["nonapi"], nonapi_file, indent=2)
+            nonapi_temp_path = nonapi_file.name
         
-        # Make API request to save both workflows
-        import aiohttp
-        import json
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as api_file:
+            json.dump(workflow_dict["api"], api_file, indent=2)
+            api_temp_path = api_file.name
         
-        api_url = wm.api_url or "https://inference.obobo.net"
-        save_url = f"{api_url}/v1/upload/save-workflow"
+        try:
+            # Generate unique filenames
+            import uuid
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_id = str(uuid.uuid4())[:8]
+            
+            nonapi_filename = f"workflow_{timestamp}_{unique_id}.json"
+            api_filename = f"workflow_api_{timestamp}_{unique_id}.json"
+            
+            
+            # Upload both files to S3
+            s3_client.upload_file(
+                nonapi_temp_path,
+                s3_bucket,
+                f"{s3_prefix}/{movie_id}/{nonapi_filename}",
+            )
+            nonapi_s3_url = f"https://media.obobo.net/{s3_prefix}/{movie_id}/{nonapi_filename}"
+            
+            s3_client.upload_file(
+                api_temp_path,
+                s3_bucket,
+                f"{s3_prefix}/{movie_id}/{api_filename}",
+            )
+            api_s3_url = f"https://media.obobo.net/{s3_prefix}/{movie_id}/{api_filename}"
+            
+            # Update the workflow node with new URLs via inference API
+            import aiohttp
+            inference_api_url = os.getenv('LOCAL_INFERENCE_API_URL', 'http://inference.obobo.net')
+            update_url = f"{inference_api_url}/v1/worker/workflow-node/{workflow_node_id}/update-workflow"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(update_url, json={
+                    "workflow": {
+                        "link": nonapi_s3_url,
+                        "api_link": api_s3_url,
+                    }
+                }) as response:
+                    if response.status == 200:
+                        return web.json_response({
+                            "success": True,
+                            "message": "Workflows saved successfully",
+                            "url": nonapi_s3_url,
+                            "api_url": api_s3_url
+                        })
+                    else:
+                        error_text = await response.text()
+                        return web.json_response({
+                            "success": False,
+                            "message": f"Failed to update workflow node: {error_text}"
+                        }, status=response.status)
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(save_url, json={
-                #"workflow_url": workflow_url,
-                "workflow": workflow_dict,
-                "workflow_node_id": workflow_node_id
-            }) as response:
-                if response.status == 200:
-                    api_result = await response.json()
-                    return web.json_response({
-                        "success": True,
-                        "message": "Workflows saved successfully",
-                        "url": api_result.get("url"),
-                        "api_url": api_result.get("api_url")
-                    })
-                else:
-                    error_text = await response.text()
-                    return web.json_response({
-                        "success": False,
-                        "message": f"API request failed: {error_text}"
-                    }, status=response.status)
+        finally:
+            # Clean up temporary files
+            os.unlink(nonapi_temp_path)
+            os.unlink(api_temp_path)
                     
     except Exception as e:
         return web.json_response({
@@ -128,11 +129,7 @@ async def cors_handler(request, handler):
 # ComfyUI web extension setup
 from server import PromptServer
 
-@PromptServer.instance.routes.get("/obobo/current_workflow")
-async def get_current_workflow_route(request):
-    return await get_current_workflow(request)
-
-@PromptServer.instance.routes.post("/obobo/save_workflow")
+@PromptServer.instance.routes.post("/api/obobo/save_workflow")
 async def save_workflow_route(request):
     return await save_workflow(request)
 

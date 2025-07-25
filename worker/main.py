@@ -3,6 +3,9 @@ import asyncio
 import logging
 import sys
 import time
+import subprocess
+import json
+import re
 from datetime import datetime
 from typing import Optional, Dict, Any
 import requests
@@ -24,22 +27,119 @@ logger = logging.getLogger(__name__)
 
 
 class Worker:
-    def __init__(self, api_url: str, worker_id: str, batch: Optional[str] = None, comfyui_server: Optional[str] = None):
+    def __init__(self, api_url: str, worker_id: str, batch: Optional[str] = None, comfyui_server: Optional[str] = None, should_create_tunnel: bool = False):
         self.api_url = api_url.rstrip("/")
         self.worker_id = worker_id
         self.registered = False
         self.gpus = get_gpu_info()
         self.batch = batch
         self.comfyui_server = comfyui_server
+        self.should_create_tunnel = should_create_tunnel
+        self.tunnel_url = None
+        self.ngrok_process = None
         self.s3_client = get_s3_client()
         self.comfyui_output_path = f"{COMFYUI_PATH}/output"
         self.last_workflow_url = None
         self.batch_wait_time = 15
-    
+
+    def check_tunnel_status(self) -> bool:
+        """Check if there's already a tunneled worker registered"""
+        try:
+            logger.info("Checking if there's already a tunneled worker...")
+            response = requests.get(f"{self.api_url}/v1/worker/tunnel-status", timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                has_tunneled_worker = data.get("has_tunneled_worker", False)
+                if has_tunneled_worker:
+                    logger.info("Found existing tunneled worker. Will not create new tunnel.")
+                    return False
+                else:
+                    logger.info("No tunneled worker found. Will create tunnel.")
+                    return True
+            else:
+                logger.warning("Could not check tunnel status from API. Will create tunnel.")
+                return True
+        except Exception as e:
+            logger.warning(f"Error checking tunnel status: {e}. Will create tunnel.")
+            return True
+
+    def create_ngrok_tunnel(self) -> bool:
+        """Create ngrok tunnel for ComfyUI server"""
+        try:
+            # Extract port from comfyui_server URL
+            port_match = re.search(r':(\d+)', self.comfyui_server)
+            port = int(port_match.group(1)) if port_match else 8188
+            
+            logger.info(f"Starting ngrok tunnel for port {port}...")
+            
+            # Kill any existing ngrok processes
+            try:
+                subprocess.run(["pkill", "-f", "ngrok http"], check=False)
+            except:
+                pass
+            
+            # Start ngrok tunnel
+            self.ngrok_process = subprocess.Popen(
+                ["ngrok", "http", str(port)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            
+            # Wait for tunnel to initialize
+            for i in range(15):
+                time.sleep(1)
+                try:
+                    # Get tunnel info from ngrok API
+                    response = requests.get("http://127.0.0.1:4040/api/tunnels", timeout=5)
+                    if response.status_code == 200:
+                        tunnels = response.json().get("tunnels", [])
+                        if tunnels:
+                            public_url = tunnels[0].get("public_url")
+                            if public_url and public_url.startswith("http"):
+                                self.tunnel_url = public_url
+                                logger.info(f"Ngrok tunnel created successfully: {self.tunnel_url}")
+                                return True
+                except:
+                    pass
+                logger.info(f"Waiting for ngrok tunnel initialization... ({i+1}/15)")
+            
+            logger.error("Failed to create ngrok tunnel")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error creating ngrok tunnel: {e}")
+            return False
+
+    def cleanup_tunnel(self):
+        """Clean up ngrok tunnel process"""
+        if self.ngrok_process:
+            try:
+                self.ngrok_process.terminate()
+                self.ngrok_process.wait(timeout=5)
+            except:
+                try:
+                    self.ngrok_process.kill()
+                except:
+                    pass
+            self.ngrok_process = None
+        
+        # Also kill any remaining ngrok processes
+        try:
+            subprocess.run(["pkill", "-f", "ngrok"], check=False)
+        except:
+            pass
 
     def register(self) -> bool:
         """Register worker with the API"""
         try:
+            # Handle tunnel creation if requested
+            if self.should_create_tunnel:
+                if self.check_tunnel_status():
+                    if not self.create_ngrok_tunnel():
+                        logger.error("Failed to create tunnel, but continuing without it")
+                        self.should_create_tunnel = False
+                else:
+                    self.should_create_tunnel = False
         
             import re
             port_match = re.search(r':(\d+)', self.comfyui_server)
@@ -50,12 +150,16 @@ class Worker:
                 f"{self.api_url}/v1/worker/register/{self.worker_id}",
                 json={
                     "gpus": [g.model_dump() for g in self.gpus],
-                    "port_address": str(comfyui_port)
+                    "port_address": str(comfyui_port),
+                    "tunnel_url": self.tunnel_url
                     },
             )
             response.raise_for_status()
             self.registered = True
-            logger.info(f"Successfully registered worker {self.worker_id}")
+            if self.tunnel_url:
+                logger.info(f"Successfully registered worker {self.worker_id} with tunnel: {self.tunnel_url}")
+            else:
+                logger.info(f"Successfully registered worker {self.worker_id}")
             return True
         except Exception as e:
             logger.error(f"Failed to register worker: {e}")
@@ -71,6 +175,11 @@ class Worker:
             response.raise_for_status()
             self.registered = False
             logger.info(f"Successfully unregistered worker {self.worker_id}")
+            
+            # Clean up tunnel if we created one
+            if self.should_create_tunnel:
+                self.cleanup_tunnel()
+            
             return True
         except Exception as e:
             logger.error(f"Failed to unregister worker: {e}")
@@ -208,6 +317,9 @@ class Worker:
         finally:
             if self.registered:
                 self.unregister()
+            # Always cleanup tunnel on exit
+            if self.should_create_tunnel:
+                self.cleanup_tunnel()
 
 
 def main():
@@ -226,6 +338,7 @@ def main():
         default="http://127.0.0.1:8188",
     )
     parser.add_argument("--batch", default=None, help="Optional batch ID for single batch mode")
+    parser.add_argument("--create_tunnel", action="store_true", help="Create ngrok tunnel for this worker")
 
     args = parser.parse_args()
 
@@ -234,7 +347,11 @@ def main():
     )
 
     worker = Worker(
-        api_url=args.api_url, worker_id=args.worker_id, batch=args.batch, comfyui_server=args.comfyui_server,
+        api_url=args.api_url, 
+        worker_id=args.worker_id, 
+        batch=args.batch, 
+        comfyui_server=args.comfyui_server, 
+        should_create_tunnel=args.create_tunnel,
     )
 
     try:
