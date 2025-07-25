@@ -3,6 +3,24 @@ import { api } from "../../scripts/api.js";
 
 console.log("🎬 Obobo Worker Manager extension loading...");
 
+// Extension to set cyan color for all obobo nodes
+app.registerExtension({
+    name: "obobo.node.style",
+    async nodeCreated(node) {
+        // Check if this is an obobo node by checking the comfyClass or type
+        if (node.comfyClass && node.comfyClass.startsWith("Obobo")) {
+            // Set the background color to cyan
+            node.color = "rgba(13, 51, 47, 0.7)";
+            node.bgcolor = "rgba(27, 98, 95, 0.7)";
+        }
+        // // Alternative check using node type if comfyClass isn't available
+        else if (node.type && node.type.startsWith("Obobo")) {
+            node.color = "rgba(13, 51, 47, 0.7)";
+            node.bgcolor = "rgba(27, 98, 95, 0.7)";
+        }
+    }
+});
+
 class OboboWorkerManager {
     constructor() {
         // Check for auto-load workflow parameter

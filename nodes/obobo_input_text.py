@@ -51,3 +51,8 @@ class OboboInputText(OboboBaseNode):
         except Exception as e:
             logger.error(f"Error in process_text: {str(e)}")
             raise 
+        
+    @classmethod
+    def color(cls):
+        # Example: Light blue
+        return (120, 180, 255)  # RGB tuple

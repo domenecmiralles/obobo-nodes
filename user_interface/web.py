@@ -81,7 +81,8 @@ async def save_workflow(request: Request) -> web.Response:
             
             # Update the workflow node with new URLs via inference API
             import aiohttp
-            inference_api_url = os.getenv('LOCAL_INFERENCE_API_URL', 'http://inference.obobo.net')
+            # inference_api_url = os.getenv('LOCAL_INFERENCE_API_URL', 'http://inference.obobo.net')
+            inference_api_url = "http://inference.obobo.net"
             update_url = f"{inference_api_url}/v1/worker/workflow-node/{workflow_node_id}/update-workflow"
             
             async with aiohttp.ClientSession() as session:

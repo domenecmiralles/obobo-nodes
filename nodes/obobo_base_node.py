@@ -6,6 +6,7 @@ logger = logging.getLogger(__name__)
 
 class OboboBaseNode:
     """Base class for all Obobo nodes. Provides common functionality like tooltip input."""
+    NAME = "OboboBaseNode"
     
     def __init__(self):
         self.tooltip = ""
@@ -20,14 +21,14 @@ class OboboBaseNode:
             "optional": {
                 "tooltip": ("STRING", {
                     "default": "",
-                    "multiline": True,
+                    "multiline": False,
                     "placeholder": "Enter tooltip text here...",
                     "tooltip": "Tooltip text for documentation/reference (not used in processing)"
                 }),
-                "optional_input": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "True = optional input, False = required input"
-                }),
+                # "optional_input": ("BOOLEAN", {
+                #     "default": False,
+                #     "tooltip": "True = optional input, False = required input"
+                # }),
             }
         }
 
@@ -51,3 +52,8 @@ class OboboBaseNode:
     def set_optional_input(self, optional_input):
         """Helper method to set the optional_input value"""
         self.optional_input = optional_input
+        
+    @classmethod
+    def color(cls):
+        # Example: Light blue
+        return (120, 180, 255)  # RGB tuple
