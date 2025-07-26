@@ -8,6 +8,29 @@ API_URL="http://inference.obobo.net"
 # "http://localhost:8001"
 BASE_WORKER_ID=""
 
+# Function to get current EC2 instance ID
+get_instance_id() {
+    curl -s http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null
+}
+
+# Function to terminate EC2 instance
+terminate_ec2_instance() {
+    local instance_id=$(get_instance_id)
+    if [ -n "$instance_id" ]; then
+        echo "Terminating EC2 instance: $instance_id"
+        aws ec2 terminate-instances --instance-ids "$instance_id" --region $(curl -s http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
+        if [ $? -eq 0 ]; then
+            echo "EC2 termination request sent successfully"
+        else
+            echo "Failed to terminate EC2 instance. Falling back to shutdown."
+            sudo shutdown -h now
+        fi
+    else
+        echo "Could not retrieve instance ID. Falling back to shutdown."
+        sudo shutdown -h now
+    fi
+}
+
 cleanup() {
     echo ""
     echo "Received termination signal. Cleaning up processes..."
@@ -35,6 +58,7 @@ cleanup() {
     echo "Cleaning up any remaining ComfyUI, worker, and cloudflared processes..."
     pkill -f "python3 main.py --port" 2>/dev/null || true
     pkill -f "python3 main.py --api-url" 2>/dev/null || true
+    # Kill all cloudflared processes since all workers managed by this script are shutting down
     pkill -f "cloudflared" 2>/dev/null || true
     
     # Clean up shutdown flag files (moved to end)
@@ -52,7 +76,7 @@ cleanup() {
 
 cleanup_for_machine_shutdown() {
     echo ""
-    echo "Preparing for machine shutdown..."
+    echo "Preparing for EC2 instance termination..."
     
     # Kill all tracked PIDs
     for pid in "${PIDS[@]}"; do
@@ -77,9 +101,10 @@ cleanup_for_machine_shutdown() {
     echo "Cleaning up any remaining ComfyUI, worker, and cloudflared processes..."
     pkill -f "python3 main.py --port" 2>/dev/null || true
     pkill -f "python3 main.py --api-url" 2>/dev/null || true
+    # Kill all cloudflared processes since all workers managed by this script are shutting down
     pkill -f "cloudflared" 2>/dev/null || true
     
-    echo "Process cleanup completed. Initiating machine shutdown..."
+    echo "Process cleanup completed. Initiating EC2 instance termination..."
 }
 
 check_worker_shutdown_flags() {
@@ -96,13 +121,13 @@ check_worker_shutdown_flags() {
             # Parse the flag file to determine shutdown type
             FLAG_CONTENT=$(cat "$FLAG_FILE" 2>/dev/null)
             if echo "$FLAG_CONTENT" | grep -q "SHUTDOWN_MACHINE"; then
-                echo "Worker has been idle for $(($IDLE_TIMEOUT/60))+ minutes. Initiating machine shutdown..."
+                echo "Worker has been idle for $(($IDLE_TIMEOUT/60))+ minutes. Initiating EC2 instance termination..."
                 cleanup_for_machine_shutdown
-                echo "Shutting down machine in 10 seconds..."
-                # Clean up flag files before shutdown
+                echo "Terminating EC2 instance in 10 seconds..."
+                # Clean up flag files before termination
                 rm -f "/tmp/worker_shutdown_${WORKER_ID}.flag" 2>/dev/null
                 sleep 10
-                sudo shutdown -h now
+                terminate_ec2_instance
             else
                 echo "Worker has been idle for $(($IDLE_TIMEOUT/60))+ minutes. Initiating process shutdown..."
                 cleanup
@@ -121,23 +146,20 @@ if [ $# -lt 1 ]; then
     echo ""
     echo "Options:"
     echo "  --gpus GPU_LIST                 Comma-separated list of GPU IDs to use (default: 0)"
-    echo "  --shutdown_machine              Enable automatic machine shutdown after worker idle timeout"
-    echo "  --idle_timeout SECONDS          Set idle timeout in seconds (default: 300 = 5 minutes)"
-    echo "  --no_shutdown                   Disable auto-shutdown (workers run indefinitely)"
+    echo "  --shutdown_machine              Enable automatic EC2 instance termination after worker idle timeout"
+        echo "  --idle_timeout SECONDS          Set idle timeout in seconds (default: 300 = 5 minutes)"
     echo ""
     echo "Examples:"
     echo "  $0 worker1                           # Use GPU 0, process shutdown after 5 minutes idle"
     echo "  $0 worker1 --gpus 0,1,2             # Use GPUs 0,1,2"
-    echo "  $0 worker1 --gpus 1 --shutdown_machine   # Use GPU 1, machine shutdown after 5 minutes idle"
-    echo "  $0 worker1 --gpus 0,1 --idle_timeout 600 # Use GPUs 0,1, process shutdown after 10 minutes"
-    echo "  $0 worker1 --gpus 0,1,2,3 --no_shutdown  # Use all 4 GPUs, no auto-shutdown"
+    echo "  $0 worker1 --gpus 1 --shutdown_machine   # Use GPU 1, terminate EC2 instance after 5 minutes idle"
+        echo "  $0 worker1 --gpus 0,1 --idle_timeout 600 # Use GPUs 0,1, process shutdown after 10 minutes"
     exit 1
 fi
 
 BASE_WORKER_ID=$1
 SHUTDOWN_MACHINE_FLAG=""
 IDLE_TIMEOUT=300
-NO_SHUTDOWN=false
 
 # Parse arguments
 shift
@@ -173,11 +195,6 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
-        --no_shutdown)
-            NO_SHUTDOWN=true
-            IDLE_TIMEOUT=9999999999999999999999999999999999999999999999999999999999999999999999999  # Very large number to effectively disable
-            shift
-            ;;
         *)
             echo "Unknown option: $1"
             echo "Use $0 --help for usage information"
@@ -188,20 +205,17 @@ done
 
 # Display configuration
 echo "GPU configuration: Using ${NUM_GPUS} GPU(s): ${GPUS[*]}"
-if [ "$NO_SHUTDOWN" = true ]; then
-    echo "Auto-shutdown: DISABLED (workers will run indefinitely)"
-elif [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
-    echo "Machine shutdown enabled: System will shutdown after workers are idle for $(($IDLE_TIMEOUT/60)) minutes"
+if [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
+    echo "EC2 termination enabled: Instance will be terminated after workers are idle for $(($IDLE_TIMEOUT/60)) minutes"
 else
     echo "Process shutdown enabled: Workers will shutdown after idle for $(($IDLE_TIMEOUT/60)) minutes"
 fi
 
-# Check if user can sudo shutdown when machine shutdown is enabled
+# Check if AWS CLI is available when EC2 termination is enabled
 if [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
-    if ! sudo -n shutdown --help > /dev/null 2>&1; then
-        echo "Warning: Machine shutdown requires sudo permissions. You may be prompted for password during shutdown."
-        echo "To avoid prompts, add this line to /etc/sudoers (using 'sudo visudo'):"
-        echo "$USER ALL=(ALL) NOPASSWD: /sbin/shutdown"
+    if ! command -v aws > /dev/null 2>&1; then
+        echo "Warning: EC2 termination requires AWS CLI. Please install it: 'sudo apt install awscli' or 'pip install awscli'"
+        echo "Also ensure the EC2 instance has proper IAM permissions to terminate itself."
     fi
 fi
 
@@ -213,11 +227,9 @@ fi
 source ../../../venv/bin/activate
 
 echo "Will create ${NUM_GPUS} workers for GPUs: ${GPUS[*]}"
-echo "First worker will check for tunnel creation"
-if [ "$NO_SHUTDOWN" = true ]; then
-    echo "Workers will run indefinitely (no auto-shutdown)"
-elif [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
-    echo "Workers will auto-shutdown after $(($IDLE_TIMEOUT/60)) minutes without jobs and shutdown the machine"
+echo "All workers will create cloudflared tunnels for their ComfyUI instances"
+if [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
+    echo "Workers will auto-shutdown after $(($IDLE_TIMEOUT/60)) minutes without jobs and terminate the EC2 instance"
 else
     echo "Workers will auto-shutdown after $(($IDLE_TIMEOUT/60)) minutes without jobs (processes only)"
 fi
@@ -243,11 +255,8 @@ for ((i=0; i<NUM_GPUS; i++)); do
     PIDS+=($COMFYUI_PID)
     sleep 30
     
-    # Prepare tunnel argument for first worker only
-    TUNNEL_ARG=""
-    if [ $i -eq 0 ]; then
-        TUNNEL_ARG="--create_tunnel"
-    fi
+    # All workers create tunnels
+    TUNNEL_ARG="--create_tunnel"
     
     # Start the worker
     CUDA_VISIBLE_DEVICES=$GPU_ID python3 main.py \
@@ -261,11 +270,7 @@ for ((i=0; i<NUM_GPUS; i++)); do
     WORKER_PID=$!
     PIDS+=($WORKER_PID)
     
-    if [ $i -eq 0 ]; then
-        echo "Started worker $WORKER_ID (PID: $WORKER_PID) and ComfyUI instance (PID: $COMFYUI_PID) on GPU $GPU_ID with port $COMFYUI_PORT (will check for tunnel creation)"
-    else
-        echo "Started worker $WORKER_ID (PID: $WORKER_PID) and ComfyUI instance (PID: $COMFYUI_PID) on GPU $GPU_ID with port $COMFYUI_PORT"
-    fi
+    echo "Started worker $WORKER_ID (PID: $WORKER_PID) and ComfyUI instance (PID: $COMFYUI_PID) on GPU $GPU_ID with port $COMFYUI_PORT (creating tunnel)"
 done
 
 echo "All workers and ComfyUI instances have been started. Press Ctrl+C to stop all processes."
@@ -311,7 +316,7 @@ while true; do
                 # Parse the flag file to determine shutdown type
                 FLAG_CONTENT=$(cat "$FLAG_FILE" 2>/dev/null)
                 if echo "$FLAG_CONTENT" | grep -q "SHUTDOWN_MACHINE"; then
-                    echo "Process death was due to auto-shutdown. Initiating machine shutdown..."
+                    echo "Process death was due to auto-shutdown. Initiating EC2 instance termination..."
                     machine_shutdown_requested=true
                     break
                 fi
@@ -320,11 +325,11 @@ while true; do
             fi
         done
         
-        # Handle machine shutdown if requested
+        # Handle machine termination if requested
         if [ "$machine_shutdown_requested" = true ]; then
             cleanup_for_machine_shutdown
-            echo "Shutting down machine in 10 seconds..."
-            # Clean up all flag files before shutdown
+            echo "Terminating EC2 instance in 10 seconds..."
+            # Clean up all flag files before termination
             if [ -n "$BASE_WORKER_ID" ]; then
                 for ((i=0; i<NUM_GPUS; i++)); do
                     GPU_ID=${GPUS[$i]}
@@ -333,7 +338,7 @@ while true; do
                 done
             fi
             sleep 10
-            sudo shutdown -h now
+            terminate_ec2_instance
             exit 0
         fi
         

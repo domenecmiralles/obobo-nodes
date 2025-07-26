@@ -47,27 +47,6 @@ class Worker:
         self.should_shutdown = False
         self.shutdown_machine = shutdown_machine
 
-    def check_tunnel_status(self) -> bool:
-        """Check if there's already a tunneled worker registered"""
-        try:
-            logger.info("Checking if there's already a tunneled worker...")
-            response = requests.get(f"{self.api_url}/v1/worker/tunnel-status", timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                has_tunneled_worker = data.get("has_tunneled_worker", False)
-                if has_tunneled_worker:
-                    logger.info("Found existing tunneled worker. Will not create new tunnel.")
-                    return False
-                else:
-                    logger.info("No tunneled worker found. Will create tunnel.")
-                    return True
-            else:
-                logger.warning("Could not check tunnel status from API. Will create tunnel.")
-                return True
-        except Exception as e:
-            logger.warning(f"Error checking tunnel status: {e}. Will create tunnel.")
-            return True
-
     def create_cloudflared_tunnel(self) -> bool:
         """Create cloudflared tunnel for ComfyUI server"""
         try:
@@ -77,9 +56,9 @@ class Worker:
             
             logger.info(f"Starting cloudflared tunnel for port {port}...")
             
-            # Kill any existing cloudflared processes
+            # Kill any existing cloudflared processes for this specific port
             try:
-                subprocess.run(["pkill", "-f", "cloudflared"], check=False)
+                subprocess.run(["pkill", "-f", f"cloudflared tunnel --url http://localhost:{port}"], check=False)
                 time.sleep(2)
             except:
                 pass
@@ -141,22 +120,15 @@ class Worker:
                     pass
             self.cloudflared_process = None
         
-        # Also kill any remaining cloudflared processes
-        try:
-            subprocess.run(["pkill", "-f", "cloudflared"], check=False)
-        except:
-            pass
+        # Note: Not killing other cloudflared processes since multiple workers may have tunnels
 
     def register(self) -> bool:
         """Register worker with the API"""
         try:
             # Handle tunnel creation if requested
             if self.should_create_tunnel:
-                if self.check_tunnel_status():
-                    if not self.create_cloudflared_tunnel():
-                        logger.error("Failed to create tunnel, but continuing without it")
-                        self.should_create_tunnel = False
-                else:
+                if not self.create_cloudflared_tunnel():
+                    logger.error("Failed to create tunnel, but continuing without it")
                     self.should_create_tunnel = False
         
             import re
@@ -293,7 +265,7 @@ class Worker:
 
     async def run_continuous(self):
         """Run in continuous mode, polling for batches"""
-        shutdown_info = " (machine will shutdown)" if self.shutdown_machine else ""
+        shutdown_info = " (EC2 instance will be terminated)" if self.shutdown_machine else ""
         logger.info(f"Worker will auto-shutdown after {self.max_idle_time} seconds without jobs{shutdown_info}")
         
         while True:
@@ -329,7 +301,9 @@ class Worker:
                     self.last_job_time = time.time()
                     logger.info(f"Received batch data: {batch}")
                     logger.info(f"Processing batch with {len(batch['generations'])} generations")
-                    await self.process_batch(batch) 
+                    await self.process_batch(batch)
+                    # Reset idle timer after completing the batch processing
+                    self.last_job_time = time.time() 
                 else:
                     #SHUTDOWN CODE
                     # Log idle status every minute when no jobs
@@ -427,7 +401,7 @@ def main():
     parser.add_argument("--batch", default=None, help="Optional batch ID for single batch mode")
     parser.add_argument("--create_tunnel", action="store_true", help="Create cloudflared tunnel for this worker")
     parser.add_argument("--idle_timeout", type=int, default=300, help="Maximum idle time in seconds before auto-shutdown (default: 300 = 5 minutes)")
-    parser.add_argument("--shutdown_machine", action="store_true", help="Enable automatic machine shutdown after worker auto-shutdown")
+    parser.add_argument("--shutdown_machine", action="store_true", help="Enable automatic EC2 instance termination after worker auto-shutdown")
 
     args = parser.parse_args()
 
