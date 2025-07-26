@@ -187,8 +187,6 @@ class Worker:
             logger.error(f"Failed to send heartbeat: {e}")
             return False
 
-
-
     def unregister(self) -> bool:
         """Unregister worker from API"""
         try:
@@ -307,7 +305,7 @@ class Worker:
         
         while True:
             try:
-                #SHUTDOWN CODE
+                
                 # Check if we should shutdown due to inactivity
                 current_time = time.time()
                 idle_time = current_time - self.last_job_time
@@ -334,7 +332,7 @@ class Worker:
                 # Get and process next batch
                 batch = self.get_next_batch()
                 if batch:
-                    #SHUTDOWN CODE
+                    
                     # Reset idle timer when we get a job
                     self.last_job_time = time.time()
                     logger.info(f"Received batch data: {batch}")
@@ -343,7 +341,7 @@ class Worker:
                     # Reset idle timer after completing the batch processing
                     self.last_job_time = time.time() 
                 else:
-                    #SHUTDOWN CODE
+                    
                     # Log idle status every minute when no jobs
                     if int(idle_time) % 60 == 0 and int(idle_time) > 0:
                         remaining_time = self.max_idle_time - idle_time
@@ -357,7 +355,7 @@ class Worker:
                 self.registered = False
                 await asyncio.sleep(self.batch_wait_time)
 
-    #SHUTDOWN CODE
+    
     def signal_shutdown_to_parent(self):
         """Signal to parent process that we're shutting down due to inactivity"""
         try:
@@ -399,7 +397,7 @@ class Worker:
                 await self.run_single_batch()
             else:
                 await self.run_continuous()
-            #SHUTDOWN CODE
+            
             # Check if shutdown was due to inactivity
             if self.should_shutdown:
                 logger.info("Shutdown initiated due to inactivity. Signaling parent process...")
@@ -414,7 +412,7 @@ class Worker:
             if self.should_create_tunnel:
                 self.cleanup_tunnel()
                 
-            #SHUTDOWN CODE
+            
             if self.should_shutdown:
                 logger.info("Worker auto-shutdown complete due to inactivity")
             else:

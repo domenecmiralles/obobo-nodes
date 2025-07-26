@@ -253,7 +253,8 @@ for ((i=0; i<NUM_GPUS; i++)); do
     COMFYUI_PID=$!
     cd - > /dev/null
     PIDS+=($COMFYUI_PID)
-    sleep 30
+    #TO MAKE BETTER
+    sleep 90 #sleep a lot because at the beginning its very slow
     
     # All workers create tunnels
     TUNNEL_ARG="--create_tunnel"
