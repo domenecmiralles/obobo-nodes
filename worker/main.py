@@ -122,9 +122,29 @@ class Worker:
         
         # Note: Not killing other cloudflared processes since multiple workers may have tunnels
 
+    def test_comfyui_connectivity(self) -> bool:
+        """Test if ComfyUI is responding and ready"""
+        try:
+            # Use the /prompt endpoint which returns queue info - this is a real ComfyUI endpoint
+            response = requests.get(f"{self.comfyui_server}/prompt", timeout=5)
+            if response.status_code == 200:
+                # Check if the response has the expected structure
+                data = response.json()
+                return "exec_info" in data
+            return False
+        except Exception as e:
+            logger.debug(f"ComfyUI not ready yet: {e}")
+            return False
+
     def register(self) -> bool:
         """Register worker with the API"""
         try:
+            # First, ensure ComfyUI is ready
+            logger.info("Checking ComfyUI connectivity before registration...")
+            if not self.test_comfyui_connectivity():
+                logger.info("ComfyUI not ready yet, will retry registration later")
+                return False
+
             # Handle tunnel creation if requested
             if self.should_create_tunnel:
                 if not self.create_cloudflared_tunnel():
@@ -135,7 +155,7 @@ class Worker:
             port_match = re.search(r':(\d+)', self.comfyui_server)
             comfyui_port = int(port_match.group(1)) if port_match else 8188
             
-            
+            logger.info("ComfyUI is ready, registering worker...")
             response = requests.post(
                 f"{self.api_url}/v1/worker/register/{self.worker_id}",
                 json={
@@ -146,11 +166,13 @@ class Worker:
             )
             response.raise_for_status()
             self.registered = True
+            
             if self.tunnel_url:
-                logger.info(f"Successfully registered worker {self.worker_id} with tunnel: {self.tunnel_url}")
+                logger.info(f"Successfully registered and activated worker {self.worker_id} with tunnel: {self.tunnel_url}")
             else:
-                logger.info(f"Successfully registered worker {self.worker_id}")
+                logger.info(f"Successfully registered and activated worker {self.worker_id}")
             return True
+                
         except Exception as e:
             logger.error(f"Failed to register worker: {e}")
             return False
@@ -165,16 +187,7 @@ class Worker:
             logger.error(f"Failed to send heartbeat: {e}")
             return False
 
-    def mark_ready(self) -> bool:
-        """Mark worker as ready to receive work after full initialization"""
-        try:
-            response = requests.post(f"{self.api_url}/v1/worker/ready/{self.worker_id}")
-            response.raise_for_status()
-            logger.info(f"Worker {self.worker_id} marked as ready and active")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to mark worker as ready: {e}")
-            return False
+
 
     def unregister(self) -> bool:
         """Unregister worker from API"""
@@ -272,14 +285,9 @@ class Worker:
             return
 
         try:
-            # Register worker first
+            # Register worker (includes readiness check and activation)
             if not self.register():
                 logger.error(f"Failed to register worker in single batch mode")
-                return
-            
-            # Mark worker as ready
-            if not self.mark_ready():
-                logger.error(f"Failed to mark worker as ready in single batch mode")
                 return
 
             # TODO: Implement actual batch fetching and processing
@@ -297,8 +305,6 @@ class Worker:
         shutdown_info = " (EC2 instance will be terminated)" if self.shutdown_machine else ""
         logger.info(f"Worker will auto-shutdown after {self.max_idle_time} seconds without jobs{shutdown_info}")
         
-        worker_ready = False
-        
         while True:
             try:
                 #SHUTDOWN CODE
@@ -311,21 +317,11 @@ class Worker:
                     self.should_shutdown = True
                     break
                 
+                # Register (which includes readiness check and marking as active)
                 if not self.registered and not self.register():
                     logger.error(f"Failed to register worker, retrying in 10 seconds...")
                     await asyncio.sleep(10)
                     continue
-
-                # Mark worker as ready after successful registration (only once)
-                if self.registered and not worker_ready:
-                    logger.info(f"Worker registered successfully, marking as ready...")
-                    if self.mark_ready():
-                        worker_ready = True
-                        logger.info(f"Worker is now ready to receive batches")
-                    else:
-                        logger.error(f"Failed to mark worker as ready, will retry...")
-                        await asyncio.sleep(5)
-                        continue
 
                 # Send heartbeat
                 if not self.send_heartbeat():
@@ -333,7 +329,6 @@ class Worker:
                         f"Failed to send heartbeat, attempting to re-register..."
                     )
                     self.registered = False
-                    worker_ready = False  # Reset ready status if we need to re-register
                     continue
 
                 # Get and process next batch
