@@ -156,7 +156,25 @@ class Worker:
             return False
 
     def send_heartbeat(self) -> bool:
-        return True
+        """Send heartbeat to API to indicate worker is still alive"""
+        try:
+            response = requests.post(f"{self.api_url}/v1/worker/heartbeat/{self.worker_id}")
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send heartbeat: {e}")
+            return False
+
+    def mark_ready(self) -> bool:
+        """Mark worker as ready to receive work after full initialization"""
+        try:
+            response = requests.post(f"{self.api_url}/v1/worker/ready/{self.worker_id}")
+            response.raise_for_status()
+            logger.info(f"Worker {self.worker_id} marked as ready and active")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to mark worker as ready: {e}")
+            return False
 
     def unregister(self) -> bool:
         """Unregister worker from API"""
@@ -254,6 +272,16 @@ class Worker:
             return
 
         try:
+            # Register worker first
+            if not self.register():
+                logger.error(f"Failed to register worker in single batch mode")
+                return
+            
+            # Mark worker as ready
+            if not self.mark_ready():
+                logger.error(f"Failed to mark worker as ready in single batch mode")
+                return
+
             # TODO: Implement actual batch fetching and processing
             logger.info(f"Processing single batch {len(self.batch)}")
             await asyncio.sleep(5)  # Simulate work
@@ -261,12 +289,15 @@ class Worker:
         except Exception as e:
             logger.error(f"Error in single batch mode: {e}")
         finally:
-            self.unregister()
+            if self.registered:
+                self.unregister()
 
     async def run_continuous(self):
         """Run in continuous mode, polling for batches"""
         shutdown_info = " (EC2 instance will be terminated)" if self.shutdown_machine else ""
         logger.info(f"Worker will auto-shutdown after {self.max_idle_time} seconds without jobs{shutdown_info}")
+        
+        worker_ready = False
         
         while True:
             try:
@@ -285,12 +316,24 @@ class Worker:
                     await asyncio.sleep(10)
                     continue
 
+                # Mark worker as ready after successful registration (only once)
+                if self.registered and not worker_ready:
+                    logger.info(f"Worker registered successfully, marking as ready...")
+                    if self.mark_ready():
+                        worker_ready = True
+                        logger.info(f"Worker is now ready to receive batches")
+                    else:
+                        logger.error(f"Failed to mark worker as ready, will retry...")
+                        await asyncio.sleep(5)
+                        continue
+
                 # Send heartbeat
                 if not self.send_heartbeat():
                     logger.error(
                         f"Failed to send heartbeat, attempting to re-register..."
                     )
                     self.registered = False
+                    worker_ready = False  # Reset ready status if we need to re-register
                     continue
 
                 # Get and process next batch
