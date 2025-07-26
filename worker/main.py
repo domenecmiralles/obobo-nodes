@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class Worker:
-    def __init__(self, api_url: str, worker_id: str, batch: Optional[str] = None, comfyui_server: Optional[str] = None, should_create_tunnel: bool = False):
+    def __init__(self, api_url: str, worker_id: str, batch: Optional[str] = None, comfyui_server: Optional[str] = None, should_create_tunnel: bool = False, idle_timeout: int = 300, shutdown_machine: bool = False):
         self.api_url = api_url.rstrip("/")
         self.worker_id = worker_id
         self.registered = False
@@ -36,11 +36,16 @@ class Worker:
         self.comfyui_server = comfyui_server
         self.should_create_tunnel = should_create_tunnel
         self.tunnel_url = None
-        self.ngrok_process = None
+        self.cloudflared_process = None
         self.s3_client = get_s3_client()
         self.comfyui_output_path = f"{COMFYUI_PATH}/output"
         self.last_workflow_url = None
         self.batch_wait_time = 15
+        # Add auto-shutdown tracking
+        self.last_job_time = time.time()
+        self.max_idle_time = idle_timeout  # Use provided timeout
+        self.should_shutdown = False
+        self.shutdown_machine = shutdown_machine
 
     def check_tunnel_status(self) -> bool:
         """Check if there's already a tunneled worker registered"""
@@ -63,69 +68,82 @@ class Worker:
             logger.warning(f"Error checking tunnel status: {e}. Will create tunnel.")
             return True
 
-    def create_ngrok_tunnel(self) -> bool:
-        """Create ngrok tunnel for ComfyUI server"""
+    def create_cloudflared_tunnel(self) -> bool:
+        """Create cloudflared tunnel for ComfyUI server"""
         try:
             # Extract port from comfyui_server URL
             port_match = re.search(r':(\d+)', self.comfyui_server)
             port = int(port_match.group(1)) if port_match else 8188
             
-            logger.info(f"Starting ngrok tunnel for port {port}...")
+            logger.info(f"Starting cloudflared tunnel for port {port}...")
             
-            # Kill any existing ngrok processes
+            # Kill any existing cloudflared processes
             try:
-                subprocess.run(["pkill", "-f", "ngrok http"], check=False)
+                subprocess.run(["pkill", "-f", "cloudflared"], check=False)
+                time.sleep(2)
             except:
                 pass
             
-            # Start ngrok tunnel
-            self.ngrok_process = subprocess.Popen(
-                ["ngrok", "http", str(port)],
+            # Start cloudflared tunnel
+            self.cloudflared_process = subprocess.Popen(
+                ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1
             )
             
-            # Wait for tunnel to initialize
-            for i in range(15):
+            # Wait for tunnel URL to appear in output
+            for i in range(30):
                 time.sleep(1)
+                
+                # Check if process is still running
+                if self.cloudflared_process.poll() is not None:
+                    logger.error("Cloudflared process exited unexpectedly")
+                    return False
+                
+                # Try to read a line from stdout
                 try:
-                    # Get tunnel info from ngrok API
-                    response = requests.get("http://127.0.0.1:4040/api/tunnels", timeout=5)
-                    if response.status_code == 200:
-                        tunnels = response.json().get("tunnels", [])
-                        if tunnels:
-                            public_url = tunnels[0].get("public_url")
-                            if public_url and public_url.startswith("http"):
-                                self.tunnel_url = public_url
-                                logger.info(f"Ngrok tunnel created successfully: {self.tunnel_url}")
+                    line = self.cloudflared_process.stdout.readline()
+                    if line:
+                        logger.debug(f"Cloudflared output: {line.strip()}")
+                        # Look for tunnel URL in the output
+                        if "trycloudflare.com" in line or "https://" in line:
+                            # Extract URL from the line
+                            url_match = re.search(r'https://[^\s]+\.trycloudflare\.com', line)
+                            if url_match:
+                                self.tunnel_url = url_match.group(0)
+                                logger.info(f"Cloudflared tunnel created successfully: {self.tunnel_url}")
                                 return True
                 except:
                     pass
-                logger.info(f"Waiting for ngrok tunnel initialization... ({i+1}/15)")
+                
+                if i % 5 == 0:
+                    logger.info(f"Waiting for cloudflared tunnel URL... ({i+1}/30)")
             
-            logger.error("Failed to create ngrok tunnel")
+            logger.error("Failed to get cloudflared tunnel URL")
             return False
             
         except Exception as e:
-            logger.error(f"Error creating ngrok tunnel: {e}")
+            logger.error(f"Error creating cloudflared tunnel: {e}")
             return False
 
     def cleanup_tunnel(self):
-        """Clean up ngrok tunnel process"""
-        if self.ngrok_process:
+        """Clean up cloudflared tunnel process"""
+        if self.cloudflared_process:
             try:
-                self.ngrok_process.terminate()
-                self.ngrok_process.wait(timeout=5)
+                self.cloudflared_process.terminate()
+                self.cloudflared_process.wait(timeout=5)
             except:
                 try:
-                    self.ngrok_process.kill()
+                    self.cloudflared_process.kill()
                 except:
                     pass
-            self.ngrok_process = None
+            self.cloudflared_process = None
         
-        # Also kill any remaining ngrok processes
+        # Also kill any remaining cloudflared processes
         try:
-            subprocess.run(["pkill", "-f", "ngrok"], check=False)
+            subprocess.run(["pkill", "-f", "cloudflared"], check=False)
         except:
             pass
 
@@ -135,7 +153,7 @@ class Worker:
             # Handle tunnel creation if requested
             if self.should_create_tunnel:
                 if self.check_tunnel_status():
-                    if not self.create_ngrok_tunnel():
+                    if not self.create_cloudflared_tunnel():
                         logger.error("Failed to create tunnel, but continuing without it")
                         self.should_create_tunnel = False
                 else:
@@ -275,8 +293,21 @@ class Worker:
 
     async def run_continuous(self):
         """Run in continuous mode, polling for batches"""
+        shutdown_info = " (machine will shutdown)" if self.shutdown_machine else ""
+        logger.info(f"Worker will auto-shutdown after {self.max_idle_time} seconds without jobs{shutdown_info}")
+        
         while True:
             try:
+                #SHUTDOWN CODE
+                # Check if we should shutdown due to inactivity
+                current_time = time.time()
+                idle_time = current_time - self.last_job_time
+                
+                if idle_time > self.max_idle_time:
+                    logger.info(f"No jobs received for {idle_time:.1f} seconds (>{self.max_idle_time}s). Initiating auto-shutdown...")
+                    self.should_shutdown = True
+                    break
+                
                 if not self.registered and not self.register():
                     logger.error(f"Failed to register worker, retrying in 10 seconds...")
                     await asyncio.sleep(10)
@@ -293,10 +324,19 @@ class Worker:
                 # Get and process next batch
                 batch = self.get_next_batch()
                 if batch:
+                    #SHUTDOWN CODE
+                    # Reset idle timer when we get a job
+                    self.last_job_time = time.time()
                     logger.info(f"Received batch data: {batch}")
                     logger.info(f"Processing batch with {len(batch['generations'])} generations")
                     await self.process_batch(batch) 
                 else:
+                    #SHUTDOWN CODE
+                    # Log idle status every minute when no jobs
+                    if int(idle_time) % 60 == 0 and int(idle_time) > 0:
+                        remaining_time = self.max_idle_time - idle_time
+                        logger.info(f"No jobs for {int(idle_time)}s. Will auto-shutdown in {int(remaining_time)}s if no jobs received.")
+                    
                     logger.info(f"No batches available, waiting {self.batch_wait_time} seconds...")
                     await asyncio.sleep(self.batch_wait_time)
 
@@ -305,6 +345,41 @@ class Worker:
                 self.registered = False
                 await asyncio.sleep(self.batch_wait_time)
 
+    #SHUTDOWN CODE
+    def signal_shutdown_to_parent(self):
+        """Signal to parent process that we're shutting down due to inactivity"""
+        try:
+            # Create a flag file that run_workers.sh can check
+            import os
+            flag_file = f"/tmp/worker_shutdown_{self.worker_id}.flag"
+            shutdown_type = "SHUTDOWN_MACHINE" if self.shutdown_machine else "SHUTDOWN_PROCESSES"
+            
+            # Ensure /tmp is writable and create the flag file
+            os.makedirs("/tmp", exist_ok=True)
+            with open(flag_file, 'w') as f:
+                f.write(f"AUTO_SHUTDOWN_IDLE:{shutdown_type}:{time.time()}")
+                f.flush()  # Ensure data is written immediately
+                os.fsync(f.fileno())  # Force write to disk
+            
+            # Set readable permissions
+            os.chmod(flag_file, 0o644)
+            
+            logger.info(f"Created shutdown flag: {flag_file} (type: {shutdown_type})")
+            
+            # Verify the file was created
+            if os.path.exists(flag_file):
+                logger.info(f"Flag file verified: {flag_file}")
+                with open(flag_file, 'r') as f:
+                    content = f.read()
+                    logger.info(f"Flag file contents: {content}")
+            else:
+                logger.error(f"Flag file was not created: {flag_file}")
+                
+        except Exception as e:
+            logger.error(f"Failed to create shutdown flag: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+
     async def run(self):
         """Main worker run loop"""
         try:
@@ -312,6 +387,12 @@ class Worker:
                 await self.run_single_batch()
             else:
                 await self.run_continuous()
+            #SHUTDOWN CODE
+            # Check if shutdown was due to inactivity
+            if self.should_shutdown:
+                logger.info("Shutdown initiated due to inactivity. Signaling parent process...")
+                self.signal_shutdown_to_parent()
+                
         except KeyboardInterrupt:
             logger.info(f"Received shutdown signal")
         finally:
@@ -320,6 +401,12 @@ class Worker:
             # Always cleanup tunnel on exit
             if self.should_create_tunnel:
                 self.cleanup_tunnel()
+                
+            #SHUTDOWN CODE
+            if self.should_shutdown:
+                logger.info("Worker auto-shutdown complete due to inactivity")
+            else:
+                logger.info("Worker shutdown complete")
 
 
 def main():
@@ -338,7 +425,9 @@ def main():
         default="http://127.0.0.1:8188",
     )
     parser.add_argument("--batch", default=None, help="Optional batch ID for single batch mode")
-    parser.add_argument("--create_tunnel", action="store_true", help="Create ngrok tunnel for this worker")
+    parser.add_argument("--create_tunnel", action="store_true", help="Create cloudflared tunnel for this worker")
+    parser.add_argument("--idle_timeout", type=int, default=300, help="Maximum idle time in seconds before auto-shutdown (default: 300 = 5 minutes)")
+    parser.add_argument("--shutdown_machine", action="store_true", help="Enable automatic machine shutdown after worker auto-shutdown")
 
     args = parser.parse_args()
 
@@ -352,6 +441,8 @@ def main():
         batch=args.batch, 
         comfyui_server=args.comfyui_server, 
         should_create_tunnel=args.create_tunnel,
+        idle_timeout=args.idle_timeout,
+        shutdown_machine=args.shutdown_machine,
     )
 
     try:
