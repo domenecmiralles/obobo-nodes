@@ -59,6 +59,9 @@ cleanup() {
     # Kill all cloudflared processes since all workers managed by this script are shutting down
     pkill -f "cloudflared" 2>/dev/null || true
     
+    # Clean up tunnel log files
+    rm -f /tmp/cloudflared_*.log 2>/dev/null || true
+    
     # Clean up shutdown flag files (moved to end)
     if [ -n "$INSTANCE_ID" ]; then
         for ((i=0; i<NUM_GPUS; i++)); do
@@ -101,6 +104,9 @@ cleanup_for_machine_shutdown() {
     pkill -f "python3 main.py --api-url" 2>/dev/null || true
     # Kill all cloudflared processes since all workers managed by this script are shutting down
     pkill -f "cloudflared" 2>/dev/null || true
+    
+    # Clean up tunnel log files
+    rm -f /tmp/cloudflared_*.log 2>/dev/null || true
     
     echo "Process cleanup completed. Initiating EC2 instance termination..."
 }
@@ -257,8 +263,7 @@ for ((i=0; i<NUM_GPUS; i++)); do
     COMFYUI_PID=$!
     cd - > /dev/null
     PIDS+=($COMFYUI_PID)
-    #TO MAKE BETTER
-    # sleep 30 #sleep a lot because at the beginning its very slow
+
     #wait for comfyui to start before starting the worker
     while ! curl -s "http://127.0.0.1:$COMFYUI_PORT" > /dev/null 2>&1; do
         echo "Waiting for ComfyUI to start on port $COMFYUI_PORT..."
@@ -267,6 +272,44 @@ for ((i=0; i<NUM_GPUS; i++)); do
     
     # All workers create tunnels
     TUNNEL_ARG="--create_tunnel"
+
+    sleep 1
+    
+    # Create cloudflared tunnel for this worker
+    echo "Creating cloudflared tunnel for port $COMFYUI_PORT..."
+    
+    # Kill any existing cloudflared processes for this specific port
+    pkill -f "cloudflared tunnel --url http://localhost:$COMFYUI_PORT" 2>/dev/null || true
+    sleep 2
+    
+    # Start cloudflared tunnel
+    cloudflared tunnel --url "http://localhost:$COMFYUI_PORT" > /tmp/cloudflared_${WORKER_ID}.log 2>&1 &
+    CLOUDFLARED_PID=$!
+    PIDS+=($CLOUDFLARED_PID)
+    
+    # Wait for tunnel URL to appear in output
+    echo "Waiting for cloudflared tunnel URL..."
+    TUNNEL_URL=""
+    for i in {1..30}; do
+        if [ -f "/tmp/cloudflared_${WORKER_ID}.log" ]; then
+            TUNNEL_URL=$(grep -o 'https://[^[:space:]]*\.trycloudflare\.com' "/tmp/cloudflared_${WORKER_ID}.log" | head -1)
+            if [ -n "$TUNNEL_URL" ]; then
+                echo "Cloudflared tunnel created successfully: $TUNNEL_URL"
+                break
+            fi
+        fi
+        sleep 1
+        if [ $((i % 5)) -eq 0 ]; then
+            echo "Still waiting for cloudflared tunnel URL... ($i/30)"
+        fi
+    done
+    
+    if [ -z "$TUNNEL_URL" ]; then
+        echo "Failed to get cloudflared tunnel URL after 30 seconds"
+        TUNNEL_URL=""
+    fi
+
+    sleep 10
     
     # Start the worker
     CUDA_VISIBLE_DEVICES=$GPU_ID python3 main.py \
@@ -276,12 +319,17 @@ for ((i=0; i<NUM_GPUS; i++)); do
         --batch "{}" \
         --idle_timeout $IDLE_TIMEOUT \
         --instance_id $INSTANCE_ID \
-        $TUNNEL_ARG \
+        --tunnel_url "$TUNNEL_URL" \
         $SHUTDOWN_MACHINE_FLAG &
     WORKER_PID=$!
     PIDS+=($WORKER_PID)
     
-    echo "Started worker $WORKER_ID (PID: $WORKER_PID) and ComfyUI instance (PID: $COMFYUI_PID) on GPU $GPU_ID with port $COMFYUI_PORT (creating tunnel)"
+    echo "Started worker $WORKER_ID (PID: $WORKER_PID) and ComfyUI instance (PID: $COMFYUI_PID) on GPU $GPU_ID with port $COMFYUI_PORT"
+    if [ -n "$TUNNEL_URL" ]; then
+        echo "  Tunnel URL: $TUNNEL_URL"
+    else
+        echo "  No tunnel URL available"
+    fi
 done
 
 echo "All workers and ComfyUI instances have been started. Press Ctrl+C to stop all processes."

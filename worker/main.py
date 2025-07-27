@@ -3,7 +3,6 @@ import asyncio
 import logging
 import sys
 import time
-import subprocess
 import json
 import re
 from datetime import datetime
@@ -27,17 +26,15 @@ logger = logging.getLogger(__name__)
 
 
 class Worker:
-    def __init__(self, api_url: str, worker_id: str, batch: Optional[str] = None, comfyui_server: Optional[str] = None, should_create_tunnel: bool = False, idle_timeout: int = 300, shutdown_machine: bool = False, instance_id: Optional[str] = None):
+    def __init__(self, api_url: str, worker_id: str, batch: Optional[str] = None, comfyui_server: Optional[str] = None, idle_timeout: int = 300, shutdown_machine: bool = False, instance_id: Optional[str] = None, tunnel_url: Optional[str] = None):
         self.api_url = api_url.rstrip("/")
         self.worker_id = worker_id
         self.registered = False
         self.gpus = get_gpu_info()
         self.batch = batch
         self.comfyui_server = comfyui_server
-        self.should_create_tunnel = should_create_tunnel
-        # Tunnel URL is created once and should never change during worker lifetime
-        self.tunnel_url = None
-        self.cloudflared_process = None
+        # Tunnel URL is provided by the parent script
+        self.tunnel_url = tunnel_url
         self.s3_client = get_s3_client()
         self.comfyui_output_path = f"{COMFYUI_PATH}/output"
         self.last_workflow_url = None
@@ -48,83 +45,6 @@ class Worker:
         self.should_shutdown = False
         self.shutdown_machine = shutdown_machine
         self.instance_id = instance_id
-
-    def create_cloudflared_tunnel(self) -> bool:
-        """Create cloudflared tunnel for ComfyUI server - called only once per worker"""
-        try:
-            # Extract port from comfyui_server URL
-            port_match = re.search(r':(\d+)', self.comfyui_server)
-            port = int(port_match.group(1)) if port_match else 8188
-            
-            logger.info(f"Creating cloudflared tunnel for port {port}...")
-            
-            # Kill any existing cloudflared processes for this specific port
-            # This ensures we don't have conflicts with previous runs
-            try:
-                subprocess.run(["pkill", "-f", f"cloudflared tunnel --url http://localhost:{port}"], check=False)
-                time.sleep(2)
-            except:
-                pass
-            
-            # Start cloudflared tunnel
-            self.cloudflared_process = subprocess.Popen(
-                ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                bufsize=1
-            )
-            
-            # Wait for tunnel URL to appear in output
-            logger.info("Waiting for cloudflared tunnel URL...")
-            for i in range(30):
-                time.sleep(1)
-                
-                # Check if process is still running
-                if self.cloudflared_process.poll() is not None:
-                    logger.error("Cloudflared process exited unexpectedly")
-                    return False
-                
-                # Try to read a line from stdout
-                try:
-                    line = self.cloudflared_process.stdout.readline()
-                    if line:
-                        logger.debug(f"Cloudflared output: {line.strip()}")
-                        # Look for tunnel URL in the output
-                        if "trycloudflare.com" in line or "https://" in line:
-                            # Extract URL from the line
-                            url_match = re.search(r'https://[^\s]+\.trycloudflare\.com', line)
-                            if url_match:
-                                self.tunnel_url = url_match.group(0)
-                                logger.info(f"Cloudflared tunnel created successfully: {self.tunnel_url}")
-                                return True
-                except:
-                    pass
-                
-                if i % 5 == 0:
-                    logger.info(f"Still waiting for cloudflared tunnel URL... ({i+1}/30)")
-            
-            logger.error("Failed to get cloudflared tunnel URL after 30 seconds")
-            return False
-            
-        except Exception as e:
-            logger.error(f"Error creating cloudflared tunnel: {e}")
-            return False
-
-    def cleanup_tunnel(self):
-        """Clean up cloudflared tunnel process"""
-        if self.cloudflared_process:
-            try:
-                self.cloudflared_process.terminate()
-                self.cloudflared_process.wait(timeout=5)
-            except:
-                try:
-                    self.cloudflared_process.kill()
-                except:
-                    pass
-            self.cloudflared_process = None
-        
-        # Note: Not killing other cloudflared processes since multiple workers may have tunnels
 
     def test_comfyui_connectivity(self) -> bool:
         """Test if ComfyUI is responding and ready"""
@@ -149,18 +69,11 @@ class Worker:
                 logger.info("ComfyUI not ready yet, will retry registration later")
                 return False
 
-            # Handle tunnel creation ONLY if requested and no tunnel exists yet
-            # Once a tunnel is created, we never recreate it
-            if self.should_create_tunnel and not self.tunnel_url:
-                logger.info("Creating cloudflared tunnel for this worker...")
-                if not self.create_cloudflared_tunnel():
-                    logger.error("Failed to create tunnel, but continuing without it")
-                    self.should_create_tunnel = False
-                    self.tunnel_url = None
-                else:
-                    logger.info(f"Tunnel created successfully: {self.tunnel_url}")
-            elif self.should_create_tunnel and self.tunnel_url:
-                logger.info(f"Using existing tunnel: {self.tunnel_url}")
+            # Log tunnel URL if provided
+            if self.tunnel_url:
+                logger.info(f"Using tunnel URL: {self.tunnel_url}")
+            else:
+                logger.info("No tunnel URL provided")
         
             import re
             port_match = re.search(r':(\d+)', self.comfyui_server)
@@ -209,10 +122,6 @@ class Worker:
             response.raise_for_status()
             self.registered = False
             logger.info(f"Successfully unregistered worker {self.worker_id}")
-            
-            # Clean up tunnel if we created one
-            if self.should_create_tunnel:
-                self.cleanup_tunnel()
             
             return True
         except Exception as e:
@@ -423,10 +332,6 @@ class Worker:
         finally:
             if self.registered:
                 self.unregister()
-            # Always cleanup tunnel on exit
-            if self.should_create_tunnel:
-                self.cleanup_tunnel()
-                
             
             if self.should_shutdown:
                 logger.info("Worker auto-shutdown complete due to inactivity")
@@ -450,10 +355,10 @@ def main():
         default="http://127.0.0.1:8188",
     )
     parser.add_argument("--batch", default=None, help="Optional batch ID for single batch mode")
-    parser.add_argument("--create_tunnel", action="store_true", help="Create cloudflared tunnel for this worker")
     parser.add_argument("--idle_timeout", type=int, default=300, help="Maximum idle time in seconds before auto-shutdown (default: 300 = 5 minutes)")
     parser.add_argument("--shutdown_machine", action="store_true", help="Enable automatic EC2 instance termination after worker auto-shutdown")
     parser.add_argument("--instance_id", required=True, help="Instance ID for the worker")
+    parser.add_argument("--tunnel_url", default=None, help="Tunnel URL provided by parent script")
 
     args = parser.parse_args()
 
@@ -462,16 +367,20 @@ def main():
     )
     if args.instance_id:
         print(f"Instance ID: {args.instance_id}")
+    if args.tunnel_url:
+        print(f"Tunnel URL: {args.tunnel_url}")
+    else:
+        print("No tunnel URL provided")
 
     worker = Worker(
         api_url=args.api_url, 
         worker_id=args.worker_id, 
         batch=args.batch, 
         comfyui_server=args.comfyui_server, 
-        should_create_tunnel=args.create_tunnel,
         idle_timeout=args.idle_timeout,
         shutdown_machine=args.shutdown_machine,
         instance_id=args.instance_id,
+        tunnel_url=args.tunnel_url,
     )
 
     try:
