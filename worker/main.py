@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class Worker:
-    def __init__(self, api_url: str, worker_id: str, batch: Optional[str] = None, comfyui_server: Optional[str] = None, should_create_tunnel: bool = False, idle_timeout: int = 300, shutdown_machine: bool = False):
+    def __init__(self, api_url: str, worker_id: str, batch: Optional[str] = None, comfyui_server: Optional[str] = None, should_create_tunnel: bool = False, idle_timeout: int = 300, shutdown_machine: bool = False, instance_id: Optional[str] = None):
         self.api_url = api_url.rstrip("/")
         self.worker_id = worker_id
         self.registered = False
@@ -46,6 +46,7 @@ class Worker:
         self.max_idle_time = idle_timeout  # Use provided timeout
         self.should_shutdown = False
         self.shutdown_machine = shutdown_machine
+        self.instance_id = instance_id
 
     def create_cloudflared_tunnel(self) -> bool:
         """Create cloudflared tunnel for ComfyUI server"""
@@ -136,6 +137,19 @@ class Worker:
             logger.debug(f"ComfyUI not ready yet: {e}")
             return False
 
+    def test_tunnel_connectivity(self) -> bool:
+        """Test if the existing tunnel is still working"""
+        if not self.tunnel_url:
+            return False
+        
+        try:
+            # Test the tunnel URL to see if it's still accessible
+            response = requests.get(f"{self.tunnel_url}/prompt", timeout=5)
+            return response.status_code == 200
+        except Exception as e:
+            logger.debug(f"Tunnel connectivity test failed: {e}")
+            return False
+
     def register(self) -> bool:
         """Register worker with the API"""
         try:
@@ -145,23 +159,36 @@ class Worker:
                 logger.info("ComfyUI not ready yet, will retry registration later")
                 return False
 
-            # Handle tunnel creation if requested
-            if self.should_create_tunnel:
+            # Handle tunnel creation if requested and no tunnel exists yet
+            if self.should_create_tunnel and not self.tunnel_url:
                 if not self.create_cloudflared_tunnel():
                     logger.error("Failed to create tunnel, but continuing without it")
                     self.should_create_tunnel = False
+            # If we have a tunnel URL, test if it's still working
+            elif self.should_create_tunnel and self.tunnel_url:
+                if not self.test_tunnel_connectivity():
+                    logger.warning("Existing tunnel appears to be broken, recreating...")
+                    self.cleanup_tunnel()
+                    self.tunnel_url = None
+                    if not self.create_cloudflared_tunnel():
+                        logger.error("Failed to recreate tunnel, but continuing without it")
+                        self.should_create_tunnel = False
         
             import re
             port_match = re.search(r':(\d+)', self.comfyui_server)
             comfyui_port = int(port_match.group(1)) if port_match else 8188
             
             logger.info("ComfyUI is ready, registering worker...")
+            if self.instance_id:
+                logger.info(f"Registering worker with instance ID: {self.instance_id}")
             response = requests.post(
                 f"{self.api_url}/v1/worker/register/{self.worker_id}",
                 json={
                     "gpus": [g.model_dump() for g in self.gpus],
                     "port_address": str(comfyui_port),
-                    "tunnel_url": self.tunnel_url
+                    "tunnel_url": self.tunnel_url,
+                    "instance_id": self.instance_id,
+                    
                     },
             )
             response.raise_for_status()
@@ -438,12 +465,15 @@ def main():
     parser.add_argument("--create_tunnel", action="store_true", help="Create cloudflared tunnel for this worker")
     parser.add_argument("--idle_timeout", type=int, default=300, help="Maximum idle time in seconds before auto-shutdown (default: 300 = 5 minutes)")
     parser.add_argument("--shutdown_machine", action="store_true", help="Enable automatic EC2 instance termination after worker auto-shutdown")
+    parser.add_argument("--instance_id", required=True, help="Instance ID for the worker")
 
     args = parser.parse_args()
 
     print(
         f"(ง •̀_•́)ง Starting worker with WORKER_ID {args.worker_id} and COMFYUI_SERVER {args.comfyui_server} and getting batches from API: {args.api_url}"
     )
+    if args.instance_id:
+        print(f"Instance ID: {args.instance_id}")
 
     worker = Worker(
         api_url=args.api_url, 
@@ -453,6 +483,7 @@ def main():
         should_create_tunnel=args.create_tunnel,
         idle_timeout=args.idle_timeout,
         shutdown_machine=args.shutdown_machine,
+        instance_id=args.instance_id,
     )
 
     try:

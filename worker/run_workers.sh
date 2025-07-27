@@ -7,15 +7,13 @@ PIDS=()
 API_URL="http://inference.obobo.net"
 # "http://localhost:8001"
 BASE_WORKER_ID=""
+# Instance ID is now passed as the first argument from the API
+INSTANCE_ID=""
 
-# Function to get current EC2 instance ID
-get_instance_id() {
-    curl -s http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null
-}
 
 # Function to terminate EC2 instance
 terminate_ec2_instance() {
-    local instance_id=$(get_instance_id)
+    local instance_id=$INSTANCE_ID
     if [ -n "$instance_id" ]; then
         echo "Terminating EC2 instance: $instance_id"
         aws ec2 terminate-instances --instance-ids "$instance_id" --region $(curl -s http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
@@ -62,10 +60,10 @@ cleanup() {
     pkill -f "cloudflared" 2>/dev/null || true
     
     # Clean up shutdown flag files (moved to end)
-    if [ -n "$BASE_WORKER_ID" ]; then
+    if [ -n "$INSTANCE_ID" ]; then
         for ((i=0; i<NUM_GPUS; i++)); do
             GPU_ID=${GPUS[$i]}
-            WORKER_ID="${BASE_WORKER_ID}_${GPU_ID}"
+            WORKER_ID="${INSTANCE_ID}_${GPU_ID}"
             rm -f "/tmp/worker_shutdown_${WORKER_ID}.flag" 2>/dev/null
         done
     fi
@@ -111,7 +109,7 @@ check_worker_shutdown_flags() {
     # Check if any worker has signaled auto-shutdown due to inactivity
     for ((i=0; i<NUM_GPUS; i++)); do
         GPU_ID=${GPUS[$i]}
-        WORKER_ID="${BASE_WORKER_ID}_${GPU_ID}"
+        WORKER_ID="${INSTANCE_ID}_${GPU_ID}"
         FLAG_FILE="/tmp/worker_shutdown_${WORKER_ID}.flag"
         
         if [ -f "$FLAG_FILE" ]; then
@@ -142,7 +140,7 @@ trap cleanup SIGINT SIGTERM
 # Check if BASE_WORKER_ID is provided
 if [ $# -lt 1 ]; then
     echo "Usage: $0 BASE_WORKER_ID [OPTIONS]"
-    echo "  BASE_WORKER_ID: Base name for worker IDs"
+    echo "  BASE_WORKER_ID: Base name for worker IDs (now serves as instance ID from API)"
     echo ""
     echo "Options:"
     echo "  --gpus GPU_LIST                 Comma-separated list of GPU IDs to use (default: 0)"
@@ -150,14 +148,15 @@ if [ $# -lt 1 ]; then
         echo "  --idle_timeout SECONDS          Set idle timeout in seconds (default: 300 = 5 minutes)"
     echo ""
     echo "Examples:"
-    echo "  $0 worker1                           # Use GPU 0, process shutdown after 5 minutes idle"
-    echo "  $0 worker1 --gpus 0,1,2             # Use GPUs 0,1,2"
-    echo "  $0 worker1 --gpus 1 --shutdown_machine   # Use GPU 1, terminate EC2 instance after 5 minutes idle"
-        echo "  $0 worker1 --gpus 0,1 --idle_timeout 600 # Use GPUs 0,1, process shutdown after 10 minutes"
+    echo "  $0 ec2_20231201-143022                           # Use GPU 0, process shutdown after 5 minutes idle"
+    echo "  $0 ec2_20231201-143022 --gpus 0,1,2             # Use GPUs 0,1,2"
+    echo "  $0 ec2_20231201-143022 --gpus 1 --shutdown_machine   # Use GPU 1, terminate EC2 instance after 5 minutes idle"
+        echo "  $0 ec2_20231201-143022 --gpus 0,1 --idle_timeout 600 # Use GPUs 0,1, process shutdown after 10 minutes"
     exit 1
 fi
 
 BASE_WORKER_ID=$1
+INSTANCE_ID=$1  # The first argument is now the instance ID from the API
 SHUTDOWN_MACHINE_FLAG=""
 IDLE_TIMEOUT=300
 
@@ -205,6 +204,8 @@ done
 
 # Display configuration
 echo "GPU configuration: Using ${NUM_GPUS} GPU(s): ${GPUS[*]}"
+echo "Instance ID: ${INSTANCE_ID}"
+echo "Worker IDs will be: ${INSTANCE_ID}_0, ${INSTANCE_ID}_1, etc."
 if [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
     echo "EC2 termination enabled: Instance will be terminated after workers are idle for $(($IDLE_TIMEOUT/60)) minutes"
 else
@@ -237,7 +238,8 @@ fi
 # Clean up any existing shutdown flags
 for ((i=0; i<NUM_GPUS; i++)); do
     GPU_ID=${GPUS[$i]}
-    WORKER_ID="${BASE_WORKER_ID}_${GPU_ID}"
+    # Worker ID format: INSTANCE_ID_GPU_ID (e.g., ec2_20231201-143022_0)
+    WORKER_ID="${INSTANCE_ID}_${GPU_ID}"
     rm -f "/tmp/worker_shutdown_${WORKER_ID}.flag" 2>/dev/null
 done
 
@@ -245,7 +247,9 @@ done
 for ((i=0; i<NUM_GPUS; i++)); do
     GPU_ID=${GPUS[$i]}
     COMFYUI_PORT=$((8100 + GPU_ID))
-    WORKER_ID="${BASE_WORKER_ID}_${GPU_ID}"
+    # Worker ID format: INSTANCE_ID_GPU_ID (e.g., ec2_20231201-143022_0)
+    # This ensures each worker has a unique ID and is traceable to its EC2 instance
+    WORKER_ID="${INSTANCE_ID}_${GPU_ID}"
     
     # Start ComfyUI
     cd ../../../
@@ -254,7 +258,12 @@ for ((i=0; i<NUM_GPUS; i++)); do
     cd - > /dev/null
     PIDS+=($COMFYUI_PID)
     #TO MAKE BETTER
-    sleep 90 #sleep a lot because at the beginning its very slow
+    # sleep 30 #sleep a lot because at the beginning its very slow
+    #wait for comfyui to start before starting the worker
+    while ! curl -s "http://127.0.0.1:$COMFYUI_PORT" > /dev/null 2>&1; do
+        echo "Waiting for ComfyUI to start on port $COMFYUI_PORT..."
+        sleep 1
+    done
     
     # All workers create tunnels
     TUNNEL_ARG="--create_tunnel"
@@ -266,6 +275,7 @@ for ((i=0; i<NUM_GPUS; i++)); do
         --worker_id $WORKER_ID \
         --batch "{}" \
         --idle_timeout $IDLE_TIMEOUT \
+        --instance_id $INSTANCE_ID \
         $TUNNEL_ARG \
         $SHUTDOWN_MACHINE_FLAG &
     WORKER_PID=$!
@@ -306,7 +316,7 @@ while true; do
         machine_shutdown_requested=false
         for ((i=0; i<NUM_GPUS; i++)); do
             GPU_ID=${GPUS[$i]}
-            WORKER_ID="${BASE_WORKER_ID}_${GPU_ID}"
+            WORKER_ID="${INSTANCE_ID}_${GPU_ID}"
             FLAG_FILE="/tmp/worker_shutdown_${WORKER_ID}.flag"
             
             echo "Checking flag file: $FLAG_FILE"
@@ -331,10 +341,10 @@ while true; do
             cleanup_for_machine_shutdown
             echo "Terminating EC2 instance in 10 seconds..."
             # Clean up all flag files before termination
-            if [ -n "$BASE_WORKER_ID" ]; then
+            if [ -n "$INSTANCE_ID" ]; then
                 for ((i=0; i<NUM_GPUS; i++)); do
                     GPU_ID=${GPUS[$i]}
-                    WORKER_ID="${BASE_WORKER_ID}_${GPU_ID}"
+                    WORKER_ID="${INSTANCE_ID}_${GPU_ID}"
                     rm -f "/tmp/worker_shutdown_${WORKER_ID}.flag" 2>/dev/null
                 done
             fi
