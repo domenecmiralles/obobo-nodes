@@ -35,6 +35,7 @@ class Worker:
         self.batch = batch
         self.comfyui_server = comfyui_server
         self.should_create_tunnel = should_create_tunnel
+        # Tunnel URL is created once and should never change during worker lifetime
         self.tunnel_url = None
         self.cloudflared_process = None
         self.s3_client = get_s3_client()
@@ -49,15 +50,16 @@ class Worker:
         self.instance_id = instance_id
 
     def create_cloudflared_tunnel(self) -> bool:
-        """Create cloudflared tunnel for ComfyUI server"""
+        """Create cloudflared tunnel for ComfyUI server - called only once per worker"""
         try:
             # Extract port from comfyui_server URL
             port_match = re.search(r':(\d+)', self.comfyui_server)
             port = int(port_match.group(1)) if port_match else 8188
             
-            logger.info(f"Starting cloudflared tunnel for port {port}...")
+            logger.info(f"Creating cloudflared tunnel for port {port}...")
             
             # Kill any existing cloudflared processes for this specific port
+            # This ensures we don't have conflicts with previous runs
             try:
                 subprocess.run(["pkill", "-f", f"cloudflared tunnel --url http://localhost:{port}"], check=False)
                 time.sleep(2)
@@ -74,6 +76,7 @@ class Worker:
             )
             
             # Wait for tunnel URL to appear in output
+            logger.info("Waiting for cloudflared tunnel URL...")
             for i in range(30):
                 time.sleep(1)
                 
@@ -99,9 +102,9 @@ class Worker:
                     pass
                 
                 if i % 5 == 0:
-                    logger.info(f"Waiting for cloudflared tunnel URL... ({i+1}/30)")
+                    logger.info(f"Still waiting for cloudflared tunnel URL... ({i+1}/30)")
             
-            logger.error("Failed to get cloudflared tunnel URL")
+            logger.error("Failed to get cloudflared tunnel URL after 30 seconds")
             return False
             
         except Exception as e:
@@ -137,19 +140,6 @@ class Worker:
             logger.debug(f"ComfyUI not ready yet: {e}")
             return False
 
-    def test_tunnel_connectivity(self) -> bool:
-        """Test if the existing tunnel is still working"""
-        if not self.tunnel_url:
-            return False
-        
-        try:
-            # Test the tunnel URL to see if it's still accessible
-            response = requests.get(f"{self.tunnel_url}/prompt", timeout=5)
-            return response.status_code == 200
-        except Exception as e:
-            logger.debug(f"Tunnel connectivity test failed: {e}")
-            return False
-
     def register(self) -> bool:
         """Register worker with the API"""
         try:
@@ -159,20 +149,18 @@ class Worker:
                 logger.info("ComfyUI not ready yet, will retry registration later")
                 return False
 
-            # Handle tunnel creation if requested and no tunnel exists yet
+            # Handle tunnel creation ONLY if requested and no tunnel exists yet
+            # Once a tunnel is created, we never recreate it
             if self.should_create_tunnel and not self.tunnel_url:
+                logger.info("Creating cloudflared tunnel for this worker...")
                 if not self.create_cloudflared_tunnel():
                     logger.error("Failed to create tunnel, but continuing without it")
                     self.should_create_tunnel = False
-            # If we have a tunnel URL, test if it's still working
-            elif self.should_create_tunnel and self.tunnel_url:
-                if not self.test_tunnel_connectivity():
-                    logger.warning("Existing tunnel appears to be broken, recreating...")
-                    self.cleanup_tunnel()
                     self.tunnel_url = None
-                    if not self.create_cloudflared_tunnel():
-                        logger.error("Failed to recreate tunnel, but continuing without it")
-                        self.should_create_tunnel = False
+                else:
+                    logger.info(f"Tunnel created successfully: {self.tunnel_url}")
+            elif self.should_create_tunnel and self.tunnel_url:
+                logger.info(f"Using existing tunnel: {self.tunnel_url}")
         
             import re
             port_match = re.search(r':(\d+)', self.comfyui_server)
