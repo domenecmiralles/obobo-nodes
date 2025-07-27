@@ -269,18 +269,24 @@ for ((i=0; i<NUM_GPUS; i++)); do
         echo "Waiting for ComfyUI to start on port $COMFYUI_PORT..."
         sleep 1
     done
-    
+
+    echo "Warming up ComfyUI..."
+    curl -X POST "http://127.0.0.1:$COMFYUI_PORT/prompt" \
+        -H "Content-Type: application/json" \
+        -d '{"prompt":{}, "client_id": "warmup"}' || true
+
+    # Optional sleep to allow CUDA initialization
+    sleep 3
+
     # All workers create tunnels
     TUNNEL_ARG="--create_tunnel"
-
-    sleep 1
     
     # Create cloudflared tunnel for this worker
     echo "Creating cloudflared tunnel for port $COMFYUI_PORT..."
     
     # Kill any existing cloudflared processes for this specific port
-    pkill -f "cloudflared tunnel --url http://localhost:$COMFYUI_PORT" 2>/dev/null || true
-    sleep 2
+    # pkill -f "cloudflared tunnel --url http://localhost:$COMFYUI_PORT" 2>/dev/null || true
+    # sleep 2
     
     # Start cloudflared tunnel
     cloudflared tunnel --url "http://localhost:$COMFYUI_PORT" > /tmp/cloudflared_${WORKER_ID}.log 2>&1 &
@@ -309,7 +315,7 @@ for ((i=0; i<NUM_GPUS; i++)); do
         TUNNEL_URL=""
     fi
 
-    sleep 10
+    sleep 1
     
     # Start the worker
     CUDA_VISIBLE_DEVICES=$GPU_ID python3 main.py \
