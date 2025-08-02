@@ -151,6 +151,8 @@ class Worker:
         """
         max_batch_processing_time = 3600
         start_time = time.time()
+        last_heartbeat_time = time.time()
+        heartbeat_interval = 30  # Send heartbeat every 30 seconds during processing
         
         if self.last_workflow_url != batch["workflow_url"]:
             unload_models_and_empty_memory(self.comfyui_server)
@@ -162,6 +164,14 @@ class Worker:
             )
         previous_jobs_in_queue = 0
         while True:
+            current_time = time.time()
+            
+            # Send heartbeat periodically during processing
+            if current_time - last_heartbeat_time >= heartbeat_interval:
+                if not self.send_heartbeat():
+                    logger.warning("Failed to send heartbeat during batch processing, but continuing...")
+                last_heartbeat_time = current_time
+            
             jobs_in_queue = jobs_in_comfyui_queue(self.comfyui_server)
             if jobs_in_queue - previous_jobs_in_queue < 0 or jobs_in_queue == 0:
                 # if jobs in queue is less than previous jobs in queue, upload the completed jobs
