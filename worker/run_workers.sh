@@ -230,8 +230,8 @@ fi
 # source ~/miniconda3/etc/profile.d/conda.sh
 # conda activate oboboenv
 
-#activate the venv:
-source ../../../venv/bin/activate
+#activate the venv (we activate it in the api):
+#source ../../../venv/bin/activate
 
 echo "Will create ${NUM_GPUS} workers for GPUs: ${GPUS[*]}"
 echo "All workers will create cloudflared tunnels for their ComfyUI instances"
