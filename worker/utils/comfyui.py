@@ -213,7 +213,9 @@ def fill_workflow_obobo_inputs(
     lora_nodes = {}
     LORA_PATH = f"{COMFYUI_PATH}/models/loras/obobo"
     
-
+    # first put the seed, then the obobo nodes
+    workflow = set_random_seed_in_workflow(workflow)
+    
     for key, node in workflow.items():
         if "OboboOutput" in node["class_type"]:
             node["inputs"]["file_path"] = output_file_path
@@ -386,7 +388,7 @@ def fill_workflow_obobo_inputs(
         workflow[n] = node
     # logger.info(f"DEBUG: lora_nodes: {json.dumps(lora_nodes, indent=2)}")
     # Set random seed for any node with a 'seed' input
-    workflow = set_random_seed_in_workflow(workflow)
+    # workflow = set_random_seed_in_workflow(workflow)
     logger.debug("Saved modified workflow to %s", download_workflow_path)
     if download_workflow_path:
         # Save the modified workflow to a file
