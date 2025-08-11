@@ -270,13 +270,13 @@ for ((i=0; i<NUM_GPUS; i++)); do
         sleep 1
     done
 
-    echo "Warming up ComfyUI..."
-    curl -X POST "http://127.0.0.1:$COMFYUI_PORT/prompt" \
-        -H "Content-Type: application/json" \
-        -d '{"prompt":{}, "client_id": "warmup"}' || true
+    # echo "Warming up ComfyUI..."
+    # curl -X POST "http://127.0.0.1:$COMFYUI_PORT/prompt" \
+    #     -H "Content-Type: application/json" \
+    #     -d '{"prompt":{}, "client_id": "warmup"}' || true
 
     # Optional sleep to allow CUDA initialization
-    sleep 3
+    sleep 1
 
     # All workers create tunnels
     TUNNEL_ARG="--create_tunnel"
