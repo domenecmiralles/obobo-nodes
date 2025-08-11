@@ -428,7 +428,7 @@ done
 # Safety watchdog: terminate EC2 if workers fail to register within a grace period
 if [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
   (
-    GRACE_SECONDS=480  # 8 minutes
+    GRACE_SECONDS=960  # 16 minutes
     CHECK_INTERVAL=15
     ELAPSED=0
     echo "Starting registration watchdog (grace: ${GRACE_SECONDS}s)..."
