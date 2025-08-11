@@ -390,7 +390,17 @@ while true; do
             fi
         done
         
-        # Handle machine termination if requested
+        # If shutdown-machine mode is enabled, terminate the EC2 instance on unexpected death
+        if [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
+            echo "Unexpected process death detected and --shutdown_machine is enabled. Terminating EC2 instance."
+            cleanup_for_machine_shutdown
+            echo "Terminating EC2 instance in 10 seconds..."
+            sleep 10
+            terminate_ec2_instance
+            exit 0
+        fi
+
+        # Handle machine termination if requested via flags
         if [ "$machine_shutdown_requested" = true ]; then
             cleanup_for_machine_shutdown
             echo "Terminating EC2 instance in 10 seconds..."
@@ -414,3 +424,34 @@ while true; do
     # Wait 30 seconds before next check
     sleep 30
 done
+
+# Safety watchdog: terminate EC2 if workers fail to register within a grace period
+if [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
+  (
+    GRACE_SECONDS=480  # 8 minutes
+    CHECK_INTERVAL=15
+    ELAPSED=0
+    echo "Starting registration watchdog (grace: ${GRACE_SECONDS}s)..."
+    while [ $ELAPSED -lt $GRACE_SECONDS ]; do
+      all_registered=true
+      for ((i=0; i<NUM_GPUS; i++)); do
+        GPU_ID=${GPUS[$i]}
+        WORKER_ID="${INSTANCE_ID}_${GPU_ID}"
+        STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/v1/worker/$WORKER_ID")
+        if [ "$STATUS_CODE" != "200" ]; then
+          all_registered=false
+          break
+        fi
+      done
+      if [ "$all_registered" = true ]; then
+        echo "All workers registered successfully. Watchdog exiting."
+        exit 0
+      fi
+      sleep $CHECK_INTERVAL
+      ELAPSED=$((ELAPSED + CHECK_INTERVAL))
+    done
+    echo "Workers failed to register within ${GRACE_SECONDS}s. Terminating EC2 instance."
+    cleanup_for_machine_shutdown
+    terminate_ec2_instance
+  ) &
+fi
