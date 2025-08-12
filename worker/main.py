@@ -8,6 +8,7 @@ import re
 from datetime import datetime
 from typing import Optional, Dict, Any
 import requests
+import os
 from utils.device import get_gpu_info
 from utils.database import get_s3_client
 from utils.comfyui import queue_claimed_jobs, jobs_in_comfyui_queue, check_completed_jobs_and_get_outputs, upload_completed_jobs, unload_models_and_empty_memory
@@ -45,6 +46,7 @@ class Worker:
         self.should_shutdown = False
         self.shutdown_machine = shutdown_machine
         self.instance_id = instance_id
+        self.idle_flag_written = False
 
     def test_comfyui_connectivity(self) -> bool:
         """Test if ComfyUI is responding and ready"""
@@ -235,7 +237,7 @@ class Worker:
     async def run_continuous(self):
         """Run in continuous mode, polling for batches"""
         shutdown_info = " (EC2 instance will be terminated)" if self.shutdown_machine else ""
-        logger.info(f"Worker will auto-shutdown after {self.max_idle_time} seconds without jobs{shutdown_info}")
+        logger.info(f"Worker will request coordinated shutdown after {self.max_idle_time} seconds without jobs{shutdown_info}")
         
         while True:
             try:
@@ -244,10 +246,10 @@ class Worker:
                 current_time = time.time()
                 idle_time = current_time - self.last_job_time
                 
-                if idle_time > self.max_idle_time:
-                    logger.info(f"No jobs received for {idle_time:.1f} seconds (>{self.max_idle_time}s). Initiating auto-shutdown...")
-                    self.should_shutdown = True
-                    break
+                if idle_time > self.max_idle_time and not self.idle_flag_written:
+                    logger.info(f"No jobs received for {idle_time:.1f} seconds (>{self.max_idle_time}s). Signaling parent for coordinated shutdown...")
+                    self.signal_shutdown_to_parent()
+                    self.idle_flag_written = True
                 
                 # Register (which includes readiness check and marking as active)
                 if not self.registered and not self.register():
@@ -269,6 +271,9 @@ class Worker:
                     
                     # Reset idle timer when we get a job
                     self.last_job_time = time.time()
+                    # Clear any pending shutdown flag since we are active again
+                    if self.idle_flag_written:
+                        self.clear_shutdown_flag()
                     logger.info(f"Received batch data: {batch}")
                     logger.info(f"Processing batch with {len(batch['generations'])} generations")
                     await self.process_batch(batch)
@@ -294,7 +299,6 @@ class Worker:
         """Signal to parent process that we're shutting down due to inactivity"""
         try:
             # Create a flag file that run_workers.sh can check
-            import os
             flag_file = f"/tmp/worker_shutdown_{self.worker_id}.flag"
             shutdown_type = "SHUTDOWN_MACHINE" if self.shutdown_machine else "SHUTDOWN_PROCESSES"
             
@@ -324,6 +328,17 @@ class Worker:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
 
+    def clear_shutdown_flag(self):
+        """Clear idle shutdown flag if present (worker became active again)"""
+        try:
+            flag_file = f"/tmp/worker_shutdown_{self.worker_id}.flag"
+            if os.path.exists(flag_file):
+                os.remove(flag_file)
+                logger.info(f"Cleared shutdown flag: {flag_file}")
+            self.idle_flag_written = False
+        except Exception as e:
+            logger.warning(f"Failed to clear shutdown flag: {e}")
+
     async def run(self):
         """Main worker run loop"""
         try:
@@ -332,21 +347,13 @@ class Worker:
             else:
                 await self.run_continuous()
             
-            # Check if shutdown was due to inactivity
-            if self.should_shutdown:
-                logger.info("Shutdown initiated due to inactivity. Signaling parent process...")
-                self.signal_shutdown_to_parent()
-                
+            # Coordinated idle shutdown is handled by parent script; do not self-terminate here.
         except KeyboardInterrupt:
             logger.info(f"Received shutdown signal")
         finally:
             if self.registered:
                 self.unregister()
-            
-            if self.should_shutdown:
-                logger.info("Worker auto-shutdown complete due to inactivity")
-            else:
-                logger.info("Worker shutdown complete")
+            logger.info("Worker shutdown complete")
 
 
 def main():

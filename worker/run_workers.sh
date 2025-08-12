@@ -4,6 +4,10 @@
 GPUS=(0)  # Default GPU, will be overridden by --gpus argument
 NUM_GPUS=${#GPUS[@]}
 PIDS=()
+# Per-worker PID tracking
+declare -A COMFYUI_PIDS
+declare -A WORKER_PIDS
+declare -A CLOUDFLARED_PIDS
 API_URL="http://inference.obobo.net"
 # "http://localhost:8001"
 BASE_WORKER_ID=""
@@ -29,7 +33,7 @@ terminate_ec2_instance() {
     fi
 }
 
-cleanup() {
+cleanup_all() {
     echo ""
     echo "Received termination signal. Cleaning up processes..."
     
@@ -111,37 +115,68 @@ cleanup_for_machine_shutdown() {
     echo "Process cleanup completed. Initiating EC2 instance termination..."
 }
 
+cleanup_worker() {
+    local gpu_id=$1
+    local worker_id="${INSTANCE_ID}_${gpu_id}"
+    echo "Cleaning up worker processes for GPU ${gpu_id} (worker ${worker_id})..."
+    # Kill specific processes for this worker
+    if [ -n "${COMFYUI_PIDS[$gpu_id]}" ] && kill -0 "${COMFYUI_PIDS[$gpu_id]}" 2>/dev/null; then
+        kill -TERM "${COMFYUI_PIDS[$gpu_id]}" 2>/dev/null || true
+        sleep 1
+        kill -KILL "${COMFYUI_PIDS[$gpu_id]}" 2>/dev/null || true
+    fi
+    if [ -n "${WORKER_PIDS[$gpu_id]}" ] && kill -0 "${WORKER_PIDS[$gpu_id]}" 2>/dev/null; then
+        kill -TERM "${WORKER_PIDS[$gpu_id]}" 2>/dev/null || true
+        sleep 1
+        kill -KILL "${WORKER_PIDS[$gpu_id]}" 2>/dev/null || true
+    fi
+    if [ -n "${CLOUDFLARED_PIDS[$gpu_id]}" ] && kill -0 "${CLOUDFLARED_PIDS[$gpu_id]}" 2>/dev/null; then
+        kill -TERM "${CLOUDFLARED_PIDS[$gpu_id]}" 2>/dev/null || true
+        sleep 1
+        kill -KILL "${CLOUDFLARED_PIDS[$gpu_id]}" 2>/dev/null || true
+    fi
+    rm -f "/tmp/cloudflared_${worker_id}.log" 2>/dev/null || true
+    rm -f "/tmp/worker_shutdown_${worker_id}.flag" 2>/dev/null || true
+    # Unset entries to mark worker inactive
+    unset COMFYUI_PIDS[$gpu_id]
+    unset WORKER_PIDS[$gpu_id]
+    unset CLOUDFLARED_PIDS[$gpu_id]
+}
+
 check_worker_shutdown_flags() {
-    # Check if any worker has signaled auto-shutdown due to inactivity
+    # New behavior: only act when ALL active workers are idle.
+    # We detect idleness via presence of the per-worker flag files.
+    local active_workers=0
+    local flagged_idle_workers=0
     for ((i=0; i<NUM_GPUS; i++)); do
         GPU_ID=${GPUS[$i]}
         WORKER_ID="${INSTANCE_ID}_${GPU_ID}"
-        FLAG_FILE="/tmp/worker_shutdown_${WORKER_ID}.flag"
-        
-        if [ -f "$FLAG_FILE" ]; then
-            echo "Detected auto-shutdown flag from worker $WORKER_ID"
-            echo "Flag file contents: $(cat "$FLAG_FILE" 2>/dev/null)"
-            
-            # Parse the flag file to determine shutdown type
-            FLAG_CONTENT=$(cat "$FLAG_FILE" 2>/dev/null)
-            if echo "$FLAG_CONTENT" | grep -q "SHUTDOWN_MACHINE"; then
-                echo "Worker has been idle for $(($IDLE_TIMEOUT/60))+ minutes. Initiating EC2 instance termination..."
-                cleanup_for_machine_shutdown
-                echo "Terminating EC2 instance in 10 seconds..."
-                # Clean up flag files before termination
-                rm -f "/tmp/worker_shutdown_${WORKER_ID}.flag" 2>/dev/null
-                sleep 10
-                terminate_ec2_instance
-            else
-                echo "Worker has been idle for $(($IDLE_TIMEOUT/60))+ minutes. Initiating process shutdown..."
-                cleanup
+        # Count only active workers (those that still have a worker PID entry)
+        if [ -n "${WORKER_PIDS[$GPU_ID]}" ]; then
+            active_workers=$((active_workers + 1))
+            FLAG_FILE="/tmp/worker_shutdown_${WORKER_ID}.flag"
+            if [ -f "$FLAG_FILE" ]; then
+                flagged_idle_workers=$((flagged_idle_workers + 1))
             fi
         fi
     done
+
+    if [ "$active_workers" -gt 0 ] && [ "$flagged_idle_workers" -eq "$active_workers" ]; then
+        echo "All ($active_workers) workers have been idle for the timeout. Initiating coordinated shutdown."
+        if [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
+            cleanup_for_machine_shutdown
+            echo "Terminating EC2 instance..."
+            terminate_ec2_instance
+            exit 0
+        else
+            echo "Shutting down all worker processes on this instance (no EC2 termination)."
+            cleanup_all
+        fi
+    fi
 }
 
 # Set up signal traps for graceful shutdown
-trap cleanup SIGINT SIGTERM
+trap cleanup_all SIGINT SIGTERM
 
 # Check if BASE_WORKER_ID is provided
 if [ $# -lt 1 ]; then
@@ -208,6 +243,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Validate requested GPU IDs against available GPUs
+TOTAL_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')
+if [ -z "$TOTAL_GPUS" ] || ! [[ "$TOTAL_GPUS" =~ ^[0-9]+$ ]]; then
+    TOTAL_GPUS=1
+fi
+VALIDATED_GPUS=()
+for gpu in "${GPUS[@]}"; do
+    if [ "$gpu" -ge 0 ] && [ "$gpu" -lt "$TOTAL_GPUS" ]; then
+        VALIDATED_GPUS+=("$gpu")
+    else
+        echo "Warning: Requested GPU id $gpu is not available on this machine (total $TOTAL_GPUS). Skipping."
+    fi
+done
+if [ ${#VALIDATED_GPUS[@]} -eq 0 ]; then
+    echo "No valid GPUs specified. Defaulting to GPU 0."
+    VALIDATED_GPUS=(0)
+fi
+GPUS=("${VALIDATED_GPUS[@]}")
+NUM_GPUS=${#GPUS[@]}
+
 # Display configuration
 echo "GPU configuration: Using ${NUM_GPUS} GPU(s): ${GPUS[*]}"
 echo "Instance ID: ${INSTANCE_ID}"
@@ -263,6 +318,7 @@ for ((i=0; i<NUM_GPUS; i++)); do
     COMFYUI_PID=$!
     cd - > /dev/null
     PIDS+=($COMFYUI_PID)
+    COMFYUI_PIDS[$GPU_ID]=$COMFYUI_PID
 
     #wait for comfyui to start before starting the worker
     while ! curl -s "http://127.0.0.1:$COMFYUI_PORT" > /dev/null 2>&1; do
@@ -292,6 +348,7 @@ for ((i=0; i<NUM_GPUS; i++)); do
     cloudflared tunnel --url "http://localhost:$COMFYUI_PORT" > /tmp/cloudflared_${WORKER_ID}.log 2>&1 &
     CLOUDFLARED_PID=$!
     PIDS+=($CLOUDFLARED_PID)
+    CLOUDFLARED_PIDS[$GPU_ID]=$CLOUDFLARED_PID
     
     # Wait for tunnel URL to appear in output
     echo "Waiting for cloudflared tunnel URL..."
@@ -329,6 +386,7 @@ for ((i=0; i<NUM_GPUS; i++)); do
         $SHUTDOWN_MACHINE_FLAG &
     WORKER_PID=$!
     PIDS+=($WORKER_PID)
+    WORKER_PIDS[$GPU_ID]=$WORKER_PID
     
     echo "Started worker $WORKER_ID (PID: $WORKER_PID) and ComfyUI instance (PID: $COMFYUI_PID) on GPU $GPU_ID with port $COMFYUI_PORT"
     if [ -n "$TUNNEL_URL" ]; then
@@ -346,79 +404,38 @@ while true; do
     # First check for worker auto-shutdown flags (this takes priority)
     check_worker_shutdown_flags
     
-    # Then check if any processes have died
-    any_process_dead=false
-    for pid in "${PIDS[@]}"; do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            echo "Process $pid has died"
-            any_process_dead=true
+    # Then check each worker's processes; if a worker died, clean up only that worker
+    for ((i=0; i<NUM_GPUS; i++)); do
+        GPU_ID=${GPUS[$i]}
+        died=false
+        if [ -n "${COMFYUI_PIDS[$GPU_ID]}" ] && ! kill -0 "${COMFYUI_PIDS[$GPU_ID]}" 2>/dev/null; then
+            died=true
+        fi
+        if [ -n "${WORKER_PIDS[$GPU_ID]}" ] && ! kill -0 "${WORKER_PIDS[$GPU_ID]}" 2>/dev/null; then
+            died=true
+        fi
+        if [ -n "${CLOUDFLARED_PIDS[$GPU_ID]}" ] && ! kill -0 "${CLOUDFLARED_PIDS[$GPU_ID]}" 2>/dev/null; then
+            died=true
+        fi
+        if [ "$died" = true ]; then
+            echo "Detected death of one or more processes for worker ${INSTANCE_ID}_${GPU_ID}. Cleaning up this worker only."
+            cleanup_worker "$GPU_ID"
         fi
     done
-    
-    # If any process died, check for shutdown flags immediately before cleanup
-    if [ "$any_process_dead" = true ]; then
-        echo "One or more processes have died. Checking for shutdown flags..."
-        
-        # Give a moment for any flag files to be written
-        sleep 2
-        
-        # Debug: List all shutdown flag files
-        echo "Checking for shutdown flags in /tmp/:"
-        ls -la /tmp/worker_shutdown_*.flag 2>/dev/null || echo "No shutdown flag files found"
-        
-        # Check for shutdown flags one more time
-        machine_shutdown_requested=false
-        for ((i=0; i<NUM_GPUS; i++)); do
-            GPU_ID=${GPUS[$i]}
-            WORKER_ID="${INSTANCE_ID}_${GPU_ID}"
-            FLAG_FILE="/tmp/worker_shutdown_${WORKER_ID}.flag"
-            
-            echo "Checking flag file: $FLAG_FILE"
-            if [ -f "$FLAG_FILE" ]; then
-                echo "Found shutdown flag after process death: $WORKER_ID"
-                echo "Flag file contents: $(cat "$FLAG_FILE" 2>/dev/null)"
-                
-                # Parse the flag file to determine shutdown type
-                FLAG_CONTENT=$(cat "$FLAG_FILE" 2>/dev/null)
-                if echo "$FLAG_CONTENT" | grep -q "SHUTDOWN_MACHINE"; then
-                    echo "Process death was due to auto-shutdown. Initiating EC2 instance termination..."
-                    machine_shutdown_requested=true
-                    break
-                fi
-            else
-                echo "Flag file $FLAG_FILE does not exist"
-            fi
-        done
-        
-        # If shutdown-machine mode is enabled, terminate the EC2 instance on unexpected death
-        if [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
-            echo "Unexpected process death detected and --shutdown_machine is enabled. Terminating EC2 instance."
-            cleanup_for_machine_shutdown
-            echo "Terminating EC2 instance in 10 seconds..."
-            sleep 10
-            terminate_ec2_instance
-            exit 0
-        fi
 
-        # Handle machine termination if requested via flags
-        if [ "$machine_shutdown_requested" = true ]; then
-            cleanup_for_machine_shutdown
-            echo "Terminating EC2 instance in 10 seconds..."
-            # Clean up all flag files before termination
-            if [ -n "$INSTANCE_ID" ]; then
-                for ((i=0; i<NUM_GPUS; i++)); do
-                    GPU_ID=${GPUS[$i]}
-                    WORKER_ID="${INSTANCE_ID}_${GPU_ID}"
-                    rm -f "/tmp/worker_shutdown_${WORKER_ID}.flag" 2>/dev/null
-                done
-            fi
-            sleep 10
-            terminate_ec2_instance
-            exit 0
+    # If no workers remain active and shutdown_machine is enabled, terminate the instance
+    remaining_active=0
+    for ((i=0; i<NUM_GPUS; i++)); do
+        GPU_ID=${GPUS[$i]}
+        if [ -n "${WORKER_PIDS[$GPU_ID]}" ]; then
+            remaining_active=$((remaining_active + 1))
         fi
-        
-        echo "No shutdown flags found. Process died unexpectedly. Cleaning up..."
-        cleanup
+    done
+    if [ "$remaining_active" -eq 0 ] && [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
+        echo "No active workers remain. Terminating EC2 instance."
+        cleanup_for_machine_shutdown
+        terminate_ec2_instance
+        exit 0
     fi
     
     # Wait 30 seconds before next check
@@ -450,7 +467,7 @@ if [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
       sleep $CHECK_INTERVAL
       ELAPSED=$((ELAPSED + CHECK_INTERVAL))
     done
-    echo "Workers failed to register within ${GRACE_SECONDS}s. Terminating EC2 instance."
+    echo "Workers failed to register within ${GRACE_SECONDS}s and --shutdown_machine is enabled. Terminating EC2 instance."
     cleanup_for_machine_shutdown
     terminate_ec2_instance
   ) &
