@@ -266,7 +266,14 @@ NUM_GPUS=${#GPUS[@]}
 # Display configuration
 echo "GPU configuration: Using ${NUM_GPUS} GPU(s): ${GPUS[*]}"
 echo "Instance ID: ${INSTANCE_ID}"
-echo "Worker IDs will be: ${INSTANCE_ID}_0, ${INSTANCE_ID}_1, etc."
+WORKER_ID_LIST=""
+for gpu in "${GPUS[@]}"; do
+    if [ -n "$WORKER_ID_LIST" ]; then
+        WORKER_ID_LIST="${WORKER_ID_LIST}, "
+    fi
+    WORKER_ID_LIST="${WORKER_ID_LIST}${INSTANCE_ID}_${gpu}"
+done
+echo "Worker IDs will be: ${WORKER_ID_LIST}"
 if [ -n "$SHUTDOWN_MACHINE_FLAG" ]; then
     echo "EC2 termination enabled: Instance will be terminated after workers are idle for $(($IDLE_TIMEOUT/60)) minutes"
 else
@@ -353,7 +360,7 @@ for ((i=0; i<NUM_GPUS; i++)); do
     # Wait for tunnel URL to appear in output
     echo "Waiting for cloudflared tunnel URL..."
     TUNNEL_URL=""
-    for i in {1..30}; do
+    for attempt in {1..30}; do
         if [ -f "/tmp/cloudflared_${WORKER_ID}.log" ]; then
             TUNNEL_URL=$(grep -o 'https://[^[:space:]]*\.trycloudflare\.com' "/tmp/cloudflared_${WORKER_ID}.log" | head -1)
             if [ -n "$TUNNEL_URL" ]; then
@@ -362,8 +369,8 @@ for ((i=0; i<NUM_GPUS; i++)); do
             fi
         fi
         sleep 1
-        if [ $((i % 5)) -eq 0 ]; then
-            echo "Still waiting for cloudflared tunnel URL... ($i/30)"
+        if [ $((attempt % 5)) -eq 0 ]; then
+            echo "Still waiting for cloudflared tunnel URL... ($attempt/30)"
         fi
     done
     
