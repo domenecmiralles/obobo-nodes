@@ -143,6 +143,82 @@ cleanup_worker() {
     unset CLOUDFLARED_PIDS[$gpu_id]
 }
 
+start_worker() {
+    local gpu_id=$1
+    local comfyui_port=$((8100 + gpu_id))
+    local worker_id="${INSTANCE_ID}_${gpu_id}"
+    
+    echo "Starting new worker for GPU ${gpu_id} (worker ${worker_id})..."
+    
+    # Start ComfyUI
+    cd ../../../
+    CUDA_VISIBLE_DEVICES=$gpu_id python3 main.py --port $comfyui_port --lowvram --dont-upcast-attention &
+    local comfyui_pid=$!
+    cd - > /dev/null
+    PIDS+=($comfyui_pid)
+    COMFYUI_PIDS[$gpu_id]=$comfyui_pid
+
+    # Wait for ComfyUI to start
+    while ! curl -s "http://127.0.0.1:$comfyui_port" > /dev/null 2>&1; do
+        echo "Waiting for ComfyUI to start on port $comfyui_port..."
+        sleep 1
+    done
+
+    sleep 1
+
+    # Create cloudflared tunnel
+    echo "Creating cloudflared tunnel for port $comfyui_port..."
+    cloudflared tunnel --url "http://localhost:$comfyui_port" > /tmp/cloudflared_${worker_id}.log 2>&1 &
+    local cloudflared_pid=$!
+    PIDS+=($cloudflared_pid)
+    CLOUDFLARED_PIDS[$gpu_id]=$cloudflared_pid
+    
+    # Wait for tunnel URL
+    echo "Waiting for cloudflared tunnel URL..."
+    local tunnel_url=""
+    for attempt in {1..30}; do
+        if [ -f "/tmp/cloudflared_${worker_id}.log" ]; then
+            tunnel_url=$(grep -o 'https://[^[:space:]]*\.trycloudflare\.com' "/tmp/cloudflared_${worker_id}.log" | head -1)
+            if [ -n "$tunnel_url" ]; then
+                echo "Cloudflared tunnel created successfully: $tunnel_url"
+                break
+            fi
+        fi
+        sleep 1
+        if [ $((attempt % 5)) -eq 0 ]; then
+            echo "Still waiting for cloudflared tunnel URL... ($attempt/30)"
+        fi
+    done
+    
+    if [ -z "$tunnel_url" ]; then
+        echo "Failed to get cloudflared tunnel URL after 30 seconds"
+        tunnel_url=""
+    fi
+
+    sleep 1
+    
+    # Start the worker
+    CUDA_VISIBLE_DEVICES=$gpu_id python3 main.py \
+        --api-url $API_URL \
+        --comfyui_server "http://127.0.0.1:$comfyui_port" \
+        --worker_id $worker_id \
+        --batch "{}" \
+        --idle_timeout $IDLE_TIMEOUT \
+        --instance_id $INSTANCE_ID \
+        --tunnel_url "$tunnel_url" \
+        $SHUTDOWN_MACHINE_FLAG &
+    local worker_pid=$!
+    PIDS+=($worker_pid)
+    WORKER_PIDS[$gpu_id]=$worker_pid
+    
+    echo "Started replacement worker $worker_id (PID: $worker_pid) and ComfyUI instance (PID: $comfyui_pid) on GPU $gpu_id with port $comfyui_port"
+    if [ -n "$tunnel_url" ]; then
+        echo "  Tunnel URL: $tunnel_url"
+    else
+        echo "  No tunnel URL available"
+    fi
+}
+
 check_worker_shutdown_flags() {
     # New behavior: only act when ALL active workers are idle.
     # We detect idleness via presence of the per-worker flag files.
@@ -311,96 +387,10 @@ for ((i=0; i<NUM_GPUS; i++)); do
     rm -f "/tmp/worker_shutdown_${WORKER_ID}.flag" 2>/dev/null
 done
 
-# Loop through the list of GPUs
+# Loop through the list of GPUs and start initial workers
 for ((i=0; i<NUM_GPUS; i++)); do
     GPU_ID=${GPUS[$i]}
-    COMFYUI_PORT=$((8100 + GPU_ID))
-    # Worker ID format: INSTANCE_ID_GPU_ID (e.g., ec2_20231201-143022_0)
-    # This ensures each worker has a unique ID and is traceable to its EC2 instance
-    WORKER_ID="${INSTANCE_ID}_${GPU_ID}"
-    
-    # Start ComfyUI
-    cd ../../../
-    CUDA_VISIBLE_DEVICES=$GPU_ID python3 main.py --port $COMFYUI_PORT --lowvram --dont-upcast-attention &
-    COMFYUI_PID=$!
-    cd - > /dev/null
-    PIDS+=($COMFYUI_PID)
-    COMFYUI_PIDS[$GPU_ID]=$COMFYUI_PID
-
-    #wait for comfyui to start before starting the worker
-    while ! curl -s "http://127.0.0.1:$COMFYUI_PORT" > /dev/null 2>&1; do
-        echo "Waiting for ComfyUI to start on port $COMFYUI_PORT..."
-        sleep 1
-    done
-
-    # echo "Warming up ComfyUI..."
-    # curl -X POST "http://127.0.0.1:$COMFYUI_PORT/prompt" \
-    #     -H "Content-Type: application/json" \
-    #     -d '{"prompt":{}, "client_id": "warmup"}' || true
-
-    # Optional sleep to allow CUDA initialization
-    sleep 1
-
-    # All workers create tunnels
-    TUNNEL_ARG="--create_tunnel"
-    
-    # Create cloudflared tunnel for this worker
-    echo "Creating cloudflared tunnel for port $COMFYUI_PORT..."
-    
-    # Kill any existing cloudflared processes for this specific port
-    # pkill -f "cloudflared tunnel --url http://localhost:$COMFYUI_PORT" 2>/dev/null || true
-    # sleep 2
-    
-    # Start cloudflared tunnel
-    cloudflared tunnel --url "http://localhost:$COMFYUI_PORT" > /tmp/cloudflared_${WORKER_ID}.log 2>&1 &
-    CLOUDFLARED_PID=$!
-    PIDS+=($CLOUDFLARED_PID)
-    CLOUDFLARED_PIDS[$GPU_ID]=$CLOUDFLARED_PID
-    
-    # Wait for tunnel URL to appear in output
-    echo "Waiting for cloudflared tunnel URL..."
-    TUNNEL_URL=""
-    for attempt in {1..30}; do
-        if [ -f "/tmp/cloudflared_${WORKER_ID}.log" ]; then
-            TUNNEL_URL=$(grep -o 'https://[^[:space:]]*\.trycloudflare\.com' "/tmp/cloudflared_${WORKER_ID}.log" | head -1)
-            if [ -n "$TUNNEL_URL" ]; then
-                echo "Cloudflared tunnel created successfully: $TUNNEL_URL"
-                break
-            fi
-        fi
-        sleep 1
-        if [ $((attempt % 5)) -eq 0 ]; then
-            echo "Still waiting for cloudflared tunnel URL... ($attempt/30)"
-        fi
-    done
-    
-    if [ -z "$TUNNEL_URL" ]; then
-        echo "Failed to get cloudflared tunnel URL after 30 seconds"
-        TUNNEL_URL=""
-    fi
-
-    sleep 1
-    
-    # Start the worker
-    CUDA_VISIBLE_DEVICES=$GPU_ID python3 main.py \
-        --api-url $API_URL \
-        --comfyui_server "http://127.0.0.1:$COMFYUI_PORT" \
-        --worker_id $WORKER_ID \
-        --batch "{}" \
-        --idle_timeout $IDLE_TIMEOUT \
-        --instance_id $INSTANCE_ID \
-        --tunnel_url "$TUNNEL_URL" \
-        $SHUTDOWN_MACHINE_FLAG &
-    WORKER_PID=$!
-    PIDS+=($WORKER_PID)
-    WORKER_PIDS[$GPU_ID]=$WORKER_PID
-    
-    echo "Started worker $WORKER_ID (PID: $WORKER_PID) and ComfyUI instance (PID: $COMFYUI_PID) on GPU $GPU_ID with port $COMFYUI_PORT"
-    if [ -n "$TUNNEL_URL" ]; then
-        echo "  Tunnel URL: $TUNNEL_URL"
-    else
-        echo "  No tunnel URL available"
-    fi
+    start_worker "$GPU_ID"
 done
 
 echo "All workers and ComfyUI instances have been started. Press Ctrl+C to stop all processes."
@@ -411,7 +401,7 @@ while true; do
     # First check for worker auto-shutdown flags (this takes priority)
     check_worker_shutdown_flags
     
-    # Then check each worker's processes; if a worker died, clean up only that worker
+    # Then check each worker's processes; if a worker died, clean up and restart it
     for ((i=0; i<NUM_GPUS; i++)); do
         GPU_ID=${GPUS[$i]}
         died=false
@@ -425,8 +415,9 @@ while true; do
             died=true
         fi
         if [ "$died" = true ]; then
-            echo "Detected death of one or more processes for worker ${INSTANCE_ID}_${GPU_ID}. Cleaning up this worker only."
+            echo "Detected death of one or more processes for worker ${INSTANCE_ID}_${GPU_ID}. Restarting worker..."
             cleanup_worker "$GPU_ID"
+            start_worker "$GPU_ID"
         fi
     done
 
