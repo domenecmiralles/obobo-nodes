@@ -24,6 +24,7 @@ from .nodes.obobo_input_lora import OboboInputLora
 from .nodes.obobo_input_vector2 import OboboInputVector2
 from .nodes.obobo_output import OboboOutput
 from .nodes.obobo_conditional_bypass import OboboConditionalBypass
+from .obobo_call_model import OboboCallModel
 
 # Import worker web extension
 try:
@@ -44,6 +45,7 @@ NODE_CLASS_MAPPINGS = {
     "OboboInputVector2": OboboInputVector2,
     "OboboOutput":  OboboOutput,
     "OboboConditionalBypass": OboboConditionalBypass,
+    "OboboCallModel": OboboCallModel,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -56,6 +58,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "OboboInputLora": "Obobo LoRA Input",
     "OboboInputVector2": "Obobo Vector2 Input",
     "OboboConditionalBypass": "Obobo Conditional Bypass",
+    "OboboCallModel": "Obobo Call Model",
 }
 
 # Web extension mappings (required by ComfyUI for JavaScript extensions)
