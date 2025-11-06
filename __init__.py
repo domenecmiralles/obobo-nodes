@@ -24,7 +24,7 @@ from .nodes.obobo_input_lora import OboboInputLora
 from .nodes.obobo_input_vector2 import OboboInputVector2
 from .nodes.obobo_output import OboboOutput
 from .nodes.obobo_conditional_bypass import OboboConditionalBypass
-from .obobo_call_model import OboboCallModel
+from .nodes.obobo_call_model import OboboCallModel
 
 # Import worker web extension
 try:
