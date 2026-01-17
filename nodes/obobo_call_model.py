@@ -1,6 +1,6 @@
 import os
 import json
-import boto3
+import requests
 import base64
 import torch
 import numpy as np
@@ -81,40 +81,49 @@ class OboboCallModel(OboboBaseNode):
             return self._call_vision_model(prompt, images)
     
     def _call_text_model(self, prompt):
-        """Call AWS Mistral text model"""
+        """Call Together.ai Mistral text model"""
         try:
-            # Initialize Bedrock client
-            bedrock_runtime = boto3.client(
-                service_name='bedrock-runtime',
-                region_name='eu-west-2',
-                aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-                aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
-            )
+            # Get Together API key
+            together_api_key = os.getenv('TOGETHER_API_KEY')
+            if not together_api_key:
+                error_msg = "TOGETHER_API_KEY not found in environment variables"
+                logger.error(error_msg)
+                return (error_msg,)
             
-            # Format the prompt in Mistral's instruction format
+            # Format the prompt for Mistral
             formatted_prompt = f"<s>[INST] {prompt} [/INST]"
             
-            # Create the native request payload for Mistral
-            native_request = json.dumps({
+            # Create the request payload for Together.ai
+            payload = {
+                "model": "mistralai/Mistral-7B-Instruct-v0.2",
                 "prompt": formatted_prompt,
                 "max_tokens": 2000,
                 "temperature": 0.8
-            })
+            }
             
-            logger.info(f"Calling Mistral text model with prompt: {prompt[:100]}...")
+            # Set up headers
+            headers = {
+                "Authorization": f"Bearer {together_api_key}",
+                "Content-Type": "application/json"
+            }
             
-            # Call the Mistral API using invoke_model
-            response = bedrock_runtime.invoke_model(
-                modelId='mistral.mistral-large-2402-v1:0',
-                body=native_request,
-                contentType='application/json'
+            logger.info(f"Calling Together.ai text model with prompt: {prompt[:100]}...")
+            
+            # Call the Together.ai API
+            response = requests.post(
+                "https://api.together.xyz/v1/completions",
+                headers=headers,
+                json=payload
             )
             
-            # Parse the response body
-            response_body = json.loads(response['body'].read())
+            # Check if request was successful
+            response.raise_for_status()
             
-            # Extract response text from Mistral's response format
-            model_response = response_body["outputs"][0]["text"]
+            # Parse the response
+            response_data = response.json()
+            
+            # Extract response text
+            model_response = response_data["choices"][0]["text"]
             
             logger.info(f"Text model response received: {model_response[:100]}...")
             return (model_response,)
@@ -125,79 +134,81 @@ class OboboCallModel(OboboBaseNode):
             return (error_msg,)
     
     def _call_vision_model(self, prompt, images):
-        """Call AWS Nova vision model with multiple images"""
+        """Call Together.ai Qwen vision model with multiple images"""
         try:
-            # Initialize Bedrock client
-            bedrock_runtime = boto3.client(
-                service_name='bedrock-runtime',
-                region_name='eu-west-2',
-                aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-                aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+            # Get Together API key
+            together_api_key = os.getenv('TOGETHER_API_KEY')
+            if not together_api_key:
+                error_msg = "TOGETHER_API_KEY not found in environment variables"
+                logger.error(error_msg)
+                return (error_msg,)
+            
+            logger.info(f"Calling Together.ai vision model with {len(images)} image(s) and prompt: {prompt[:100]}...")
+            
+            # Process the first image
+            image = images[0]  # Take the first image
+            logger.info(f"Processing image with shape: {image.shape}")
+            
+            # Convert tensor to PIL Image
+            # ComfyUI images are in format [batch, height, width, channels] with values 0-1
+            # Take the first image from the batch
+            if len(image.shape) == 4:
+                image_tensor = image[0]  # Take first image from batch
+            else:
+                image_tensor = image
+            
+            # Convert from tensor to numpy array and scale to 0-255
+            image_np = (image_tensor.cpu().numpy() * 255).astype(np.uint8)
+            
+            # Convert to PIL Image
+            pil_image = Image.fromarray(image_np, mode='RGB')
+            
+            # Convert PIL image to bytes
+            img_buffer = io.BytesIO()
+            pil_image.save(img_buffer, format='PNG')
+            img_buffer.seek(0)
+            
+            # Encode to base64
+            image_bytes = img_buffer.getvalue()
+            image_data = base64.b64encode(image_bytes).decode('utf-8')
+            
+            # Create the request payload for Together.ai Qwen model using chat completions API
+            payload = {
+                "model": "Qwen/Qwen3-VL-32B-Instruct",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_data}"}}
+                    ]
+                }],
+                "max_tokens": 2000,
+                "temperature": 0.7
+            }
+            
+            # Set up headers
+            headers = {
+                "Authorization": f"Bearer {together_api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            logger.info("Calling Together.ai vision model with chat completions API...")
+            
+            # Call the Together.ai API using chat completions endpoint
+            response = requests.post(
+                "https://api.together.xyz/v1/chat/completions",
+                headers=headers,
+                json=payload
             )
             
-            logger.info(f"Calling Nova vision model with {len(images)} image(s) and prompt: {prompt[:100]}...")
+            # Check if request was successful
+            response.raise_for_status()
             
-            # Create message content starting with the text prompt
-            message_content = [{"text": prompt}]
-            
-            # Process each image and add to message content
-            for i, image in enumerate(images):
-                logger.info(f"Processing image {i+1} with shape: {image.shape}")
-                
-                # Convert tensor to PIL Image
-                # ComfyUI images are in format [batch, height, width, channels] with values 0-1
-                # Take the first image from the batch
-                if len(image.shape) == 4:
-                    image_tensor = image[0]  # Take first image from batch
-                else:
-                    image_tensor = image
-                
-                # Convert from tensor to numpy array and scale to 0-255
-                image_np = (image_tensor.cpu().numpy() * 255).astype(np.uint8)
-                
-                # Convert to PIL Image
-                pil_image = Image.fromarray(image_np, mode='RGB')
-                
-                # Convert PIL image to bytes
-                img_buffer = io.BytesIO()
-                pil_image.save(img_buffer, format='PNG')
-                img_buffer.seek(0)
-                
-                # Encode to base64
-                image_bytes = img_buffer.getvalue()
-                image_data = base64.b64encode(image_bytes).decode('utf-8')
-                
-                # Add image to message content
-                message_content.append({
-                    "image": {
-                        "format": "png",
-                        "source": {
-                            "bytes": base64.b64decode(image_data)
-                        }
-                    }
-                })
-            
-            # Create conversation format for Nova
-            conversation = [{
-                "role": "user",
-                "content": message_content
-            }]
-            
-            logger.info("Calling Nova vision model...")
-            
-            # Call the Nova API
-            response = bedrock_runtime.converse(
-                modelId='amazon.nova-pro-v1:0',
-                messages=conversation,
-                inferenceConfig={
-                    "maxTokens": 2000,
-                    "temperature": 0.7,
-                    "topP": 0.9
-                }
-            )
+            # Parse the response
+            response_data = response.json()
             
             # Extract response text
-            model_response = response["output"]["message"]["content"][0]["text"]
+            model_response = response_data["choices"][0]["message"]["content"]
             
             logger.info(f"Vision model response received: {model_response[:100]}...")
             return (model_response,)
