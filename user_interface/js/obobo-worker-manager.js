@@ -212,7 +212,19 @@ class OboboWorkerManager {
         // Check URL parameters for auto-load workflow
         const urlParams = new URLSearchParams(window.location.search);
         const autoLoad = urlParams.get('auto_load_workflow');
-        const workflowUrl = urlParams.get('workflow_url');
+        // Support both base64-encoded (workflow_url_b64) and plain (workflow_url) for backwards compatibility
+        const workflowUrlB64 = urlParams.get('workflow_url_b64');
+        const workflowUrlPlain = urlParams.get('workflow_url');
+        let workflowUrl = null;
+        if (workflowUrlB64) {
+            try {
+                workflowUrl = atob(workflowUrlB64);
+            } catch (e) {
+                console.error("🎬 Failed to decode workflow_url_b64:", e);
+            }
+        } else if (workflowUrlPlain) {
+            workflowUrl = workflowUrlPlain;
+        }
         
         if (autoLoad === 'true' && workflowUrl) {
             console.log("🎬 Auto-loading workflow from URL parameter:", workflowUrl);
