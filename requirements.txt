@@ -25,7 +25,6 @@ aiohttp
 python-dotenv==1.0.1
 boto3
 pillow
-bson
 pydantic
 psutil
 pymongo

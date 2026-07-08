@@ -565,11 +565,15 @@ class OboboWorkerManager {
             });
             
             canvasElement.addEventListener('drop', (e) => {
+                // Only intercept drops that carry our custom node data
+                const raw = e.dataTransfer.getData('application/json');
+                if (!raw) return; // Let ComfyUI handle file/workflow drops natively
+
                 e.preventDefault();
                 canvasElement.style.filter = '';
                 
                 try {
-                    const nodeData = JSON.parse(e.dataTransfer.getData('application/json'));
+                    const nodeData = JSON.parse(raw);
                     if (!nodeData.nodeClass) return;
                     
                     // Try multiple methods to get accurate coordinates
