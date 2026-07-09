@@ -166,32 +166,32 @@ start_worker() {
 
     sleep 1
 
-    # Create ngrok tunnel (replaces cloudflared — avoids Cloudflare Browser Integrity Check in iframes)
-    echo "Creating ngrok tunnel for port $comfyui_port..."
-    ngrok http $comfyui_port --log=stdout --log-format=json --traffic-policy-file "$(dirname "$0")/ngrok-traffic-policy.yml" > /tmp/cloudflared_${worker_id}.log 2>&1 &
+    # Create cloudflared tunnel
+    echo "Creating cloudflared tunnel for port $comfyui_port..."
+    cloudflared tunnel --url "http://localhost:$comfyui_port" --no-autoupdate > /tmp/cloudflared_${worker_id}.log 2>&1 &
     local cloudflared_pid=$!
     PIDS+=($cloudflared_pid)
     CLOUDFLARED_PIDS[$gpu_id]=$cloudflared_pid
     
-    # Wait for tunnel URL (ngrok emits JSON lines; parse the "url" field)
-    echo "Waiting for ngrok tunnel URL..."
+    # Wait for tunnel URL
+    echo "Waiting for cloudflared tunnel URL..."
     local tunnel_url=""
     for attempt in {1..30}; do
         if [ -f "/tmp/cloudflared_${worker_id}.log" ]; then
-            tunnel_url=$(grep -o '"url":"https://[^"]*"' "/tmp/cloudflared_${worker_id}.log" | grep -o 'https://[^"]*' | head -1)
+            tunnel_url=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' "/tmp/cloudflared_${worker_id}.log" | head -1)
             if [ -n "$tunnel_url" ]; then
-                echo "ngrok tunnel created successfully: $tunnel_url"
+                echo "Cloudflared tunnel created successfully: $tunnel_url"
                 break
             fi
         fi
         sleep 1
         if [ $((attempt % 5)) -eq 0 ]; then
-            echo "Still waiting for ngrok tunnel URL... ($attempt/30)"
+            echo "Still waiting for cloudflared tunnel URL... ($attempt/30)"
         fi
     done
     
     if [ -z "$tunnel_url" ]; then
-        echo "Failed to get ngrok tunnel URL after 30 seconds"
+        echo "Failed to get cloudflared tunnel URL after 30 seconds"
         tunnel_url=""
     fi
 

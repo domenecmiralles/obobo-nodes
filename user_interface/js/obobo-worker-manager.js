@@ -3,6 +3,20 @@ import { api } from "../../scripts/api.js";
 
 console.log("🎬 Obobo Worker Manager extension loading...");
 
+// Capture URL params immediately before Vue Router can wipe window.location.search.
+// ComfyUI's frontend uses Vue Router which replaces the URL with a hash route on init,
+// stripping all query params. We save them to sessionStorage here at module load time.
+(function captureOboboParams() {
+    const params = new URLSearchParams(window.location.search);
+    const workflowNodeId = params.get('workflow_node_id');
+    const movieId = params.get('movie_id');
+    if (workflowNodeId) sessionStorage.setItem('obobo_workflow_node_id', workflowNodeId);
+    if (movieId) sessionStorage.setItem('obobo_movie_id', movieId);
+    if (workflowNodeId || movieId) {
+        console.log("🎬 Captured obobo params before Vue Router init:", { workflowNodeId, movieId });
+    }
+})();
+
 // Extension to set cyan color for all obobo nodes
 app.registerExtension({
     name: "obobo.node.style",
@@ -57,10 +71,11 @@ class OboboWorkerManager {
 
     async saveWorkflow() {
         try {
-            // Get workflow context from URL parameters
+            // Read workflow context from sessionStorage (captured at module load before Vue Router
+            // wipes window.location.search) with fallback to current URL params.
             const urlParams = new URLSearchParams(window.location.search);
-            const workflowNodeId = urlParams.get('workflow_node_id');
-            const movieId = urlParams.get('movie_id');
+            const workflowNodeId = sessionStorage.getItem('obobo_workflow_node_id') || urlParams.get('workflow_node_id');
+            const movieId = sessionStorage.getItem('obobo_movie_id') || urlParams.get('movie_id');
             
             if (!workflowNodeId || !movieId) {
                 throw new Error("Missing workflow context. This ComfyUI instance wasn't opened from a workflow node.");

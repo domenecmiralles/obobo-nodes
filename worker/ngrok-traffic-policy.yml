@@ -1,7 +1,15 @@
 ---
 # ngrok Traffic Policy for obobo worker
-# Adds Ngrok-Skip-Browser-Warning header to all responses so the iframe
-# can load ComfyUI without the ngrok interstitial page blocking it.
+# ComfyUI's aiohttp server rejects requests with sec-fetch-site: cross-site.
+# We rewrite it to "same-origin" so ComfyUI accepts iframe requests.
+# We also add ngrok-skip-browser-warning to bypass the ngrok interstitial.
+on_http_request:
+  - actions:
+      - type: add-headers
+        config:
+          headers:
+            sec-fetch-site: "same-origin"
+            sec-fetch-dest: "document"
 on_http_response:
   - actions:
       - type: add-headers
