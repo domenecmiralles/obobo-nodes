@@ -168,7 +168,7 @@ start_worker() {
 
     # Create ngrok tunnel (replaces cloudflared — avoids Cloudflare Browser Integrity Check in iframes)
     echo "Creating ngrok tunnel for port $comfyui_port..."
-    ngrok http $comfyui_port --log=stdout --log-format=json --host-header=rewrite > /tmp/cloudflared_${worker_id}.log 2>&1 &
+    ngrok http $comfyui_port --log=stdout --log-format=json --traffic-policy-file "$(dirname "$0")/ngrok-traffic-policy.yml" > /tmp/cloudflared_${worker_id}.log 2>&1 &
     local cloudflared_pid=$!
     PIDS+=($cloudflared_pid)
     CLOUDFLARED_PIDS[$gpu_id]=$cloudflared_pid

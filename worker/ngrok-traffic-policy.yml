@@ -1,0 +1,10 @@
+---
+# ngrok Traffic Policy for obobo worker
+# Adds Ngrok-Skip-Browser-Warning header to all responses so the iframe
+# can load ComfyUI without the ngrok interstitial page blocking it.
+on_http_response:
+  - actions:
+      - type: add-headers
+        config:
+          headers:
+            ngrok-skip-browser-warning: "true"
