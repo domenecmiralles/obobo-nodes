@@ -97,7 +97,8 @@ class OboboWorkerManager {
             });
 
             // Get both normal workflow and API workflow
-            const apiData = await app.graphToPrompt(workflow, true);
+            // Note: newer ComfyUI graphToPrompt() takes no arguments and uses app.graph internally
+            const apiData = await app.graphToPrompt();
             const apiWorkflow = apiData.output;
             
             // Send both workflows to backend for S3 upload
